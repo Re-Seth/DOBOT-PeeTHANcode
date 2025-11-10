@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Dobot Drawing App</title>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg1:#1a0033; --bg2:#330066; --accent:#ff0066; --muted:#a0a0a0;
+    --card: rgba(10,0,20,0.9);
+  }
+  *{box-sizing:border-box}
+  body{
+    font-family:'Chakra Petch',sans-serif;
+    margin:0; color:#e8e8e8; background:linear-gradient(135deg,var(--bg1),var(--bg2));
+    padding:20px; min-height:100vh;
+  }
+  .app{
+    max-width:1100px; margin:12px auto; padding:22px; border-radius:16px;
+    background:var(--card); border:2px solid #330033; box-shadow:0 10px 40px rgba(0,0,0,0.6);
+  }
+  header{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  h1{font-family:'Press Start 2P',cursive;color:var(--accent); margin:0; font-size:20px; text-shadow:0 0 10px rgba(255,0,100,0.6)}
+  .subtitle{color:var(--muted); margin:0 0 8px 0; font-size:14px}
+  .controls{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+  button, select, input[type="file"], input[type="number"]{
+    padding:10px 14px; border-radius:12px; border:none; font-weight:600; cursor:pointer; background-color: #333; color: #fff;
+  }
+  button:disabled { 
+    background-color: #404040; 
+    color: #aaa; 
+    cursor: not-allowed; 
+  }
+  button.btn-small { padding: 5px 10px; font-size: 12px; }
+  .btn-primary{background:linear-gradient(45deg,#ff0066,#ff66cc); color:#fff}
+  .btn-secondary{background:linear-gradient(45deg,#3366ff,#6699ff); color:#fff}
+  .btn-danger{background:linear-gradient(45deg,#990000,#ff3333); color:#fff}
+  .row{display:flex; gap:16px; margin-top:16px; flex-wrap:wrap}
+  .col{flex:1; min-width:260px}
+  .card{
+    padding:14px; border-radius:12px; background:rgba(20,0,40,0.6); border:1px solid #330033;
+  }
+  .status-box{padding:10px;border-radius:8px;margin-bottom:8px;font-weight:700}
+  .status-disconnected{background:#330000;color:#ff9999;border:1px solid #ff3333}
+  .status-connected{background:#003300;color:#99ff99;border:1px solid #33ff33}
+  .status-loading{background:#000033;color:#99b3ff;border:1px solid #3366ff}
+  .progress-wrap{margin-top:12px}
+  .progress-container{height:18px;background:#220044;border-radius:12px;border:1px solid #330033;overflow:hidden}
+  .progress-bar{height:100%; width:0%; background:linear-gradient(90deg,#ff0066,#ff66cc); transition:width .25s ease}
+  .progress-meta{display:flex;justify-content:space-between; margin-top:6px; font-size:13px; color:var(--muted)}
+  .image-compare{display:flex; gap:12px; margin-top:12px; flex-wrap:wrap; justify-content:center}
+  .image-box{background:rgba(10,0,30,0.5); padding:10px;border-radius:10px; border:1px solid #660099; min-width:170px; max-width:320px; text-align:center}
+  .image-box img{max-width:100%; border-radius:6px; display:block; margin:8px auto; border:2px solid #9933ff}
+  .log-box{font-family:monospace; font-size:13px; max-height:220px; overflow:auto; padding:10px; border-radius:8px; background:rgba(0,0,0,0.4); border:1px solid #330033; color:#ddd}
+  .log-line{padding:4px 0; border-bottom:1px dashed rgba(255,255,255,0.02)}
+  #previewCanvas{width:100%; height:320px; background:#fff; border-radius:8px; display:block}
+  .small{font-size:13px; color:var(--muted)}
+  .form-group{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .corner-inputs{ display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 10px; }
+  .corner-group { justify-content: space-between; }
+  .corner-group label { min-width: 80px; }
+  label{font-size:13px; color:var(--muted)}
+  .toast{position:fixed; right:20px; bottom:20px; background:linear-gradient(45deg,#222, #440044); color:#fff; padding:12px 16px; border-radius:10px; box-shadow:0 8px 30px rgba(0,0,0,0.6); display:none; z-index:9999}
+  .modal{position:fixed; inset:0; background:rgba(0,0,0,0.8); display:none; align-items:center; justify-content:center; z-index:999; padding: 20px;}
+  .modal .modal-card{background:var(--card); padding:24px; border-radius:12px; max-width:760px; width:100%; border:1px solid #330033; max-height: 90vh; overflow-y: auto;}
+  .modal h2{margin-top:0;color:var(--accent)}
+  .modal h3{color:#99aaff; border-bottom: 1px solid #330033; padding-bottom: 8px;}
+  .modal li { margin-bottom: 10px; }
+  footer{margin-top:18px; text-align:center; color:var(--muted); font-size:13px}
+  @media (max-width:760px){
+    header{flex-direction:column; align-items:flex-start}
+    .row{flex-direction:column}
+    #previewCanvas{height:260px}
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Dobot Drawing App 🎨🤖</h1>
+        <p class="subtitle">Convert images to line art for drawing with Dobot Magician</p>
+      </div>
+      <div style="margin-left:auto" class="controls">
+        <button id="helpBtn" class="btn-secondary">Help</button>
+      </div>
+    </header>
+
+    <div class="row" style="margin-top:12px">
+      <div class="col card">
+        <div id="statusMessage" class="status-box status-disconnected">Status: Disconnected</div>
+        <div id="dobotInfo" style="display:none">
+          <div class="small">Model: <strong id="dobotModel">-</strong> &nbsp; | &nbsp; Port: <strong id="dobotPort">-</strong></div>
+        </div>
+        <div style="margin-top:10px" class="controls">
+          <button id="connectBtn" class="btn-primary">Connect Dobot</button>
+          <button id="disconnectBtn" class="btn-secondary" disabled>Disconnect</button>
+        </div>
+        <div style="margin-top:10px; border-top: 1px solid #330033; padding-top: 10px;" class="form-group">
+          <label class="small">Speed (%):</label>
+          <input id="speedInput" type="number" min="1" max="100" value="50" style="width:90px" title="Drawing speed (1-100%)">
+          <label class="small">Pen offset (mm):</label>
+          <input id="penOffsetInput" type="number" step="0.5" value="0" style="width:90px" title="Pen pressure offset (positive = deeper)">
+          <label class="small">Safety height (mm):</label>
+          <input id="safetyHeightInput" type="number" step="0.5" value="10" style="width:90px" title="Height when lifting the pen to move">
+        </div>
+      </div>
+      
+      <div class="col card">
+        <h3 style="margin:0 0 8px 0">Paper Calibration</h3>
+        <p class="small" style="margin-top:0">Move Dobot to the paper corners and press "Set", or enter coordinates manually.</p>
+        <div class="corner-inputs">
+          <div class="form-group corner-group">
+            <label>Top-Left:</label>
+            <div>
+                <input id="tl_x" type="number" placeholder="X" style="width:80px">
+                <input id="tl_y" type="number" placeholder="Y" style="width:80px">
+            </div>
+            <button id="setTlBtn" class="btn-secondary btn-small" disabled>Set</button>
+          </div>
+          <div class="form-group corner-group">
+            <label>Top-Right:</label>
+            <div>
+                <input id="tr_x" type="number" placeholder="X" style="width:80px">
+                <input id="tr_y" type="number" placeholder="Y" style="width:80px">
+            </div>
+            <button id="setTrBtn" class="btn-secondary btn-small" disabled>Set</button>
+          </div>
+          <div class="form-group corner-group">
+            <label>Bottom-Left:</label>
+            <div>
+                <input id="bl_x" type="number" placeholder="X" style="width:80px">
+                <input id="bl_y" type="number" placeholder="Y" style="width:80px">
+            </div>
+            <button id="setBlBtn" class="btn-secondary btn-small" disabled>Set</button>
+          </div>
+          <div class="form-group corner-group">
+            <label>Bottom-Right:</label>
+            <div>
+                <input id="br_x" type="number" placeholder="X" style="width:80px">
+                <input id="br_y" type="number" placeholder="Y" style="width:80px">
+            </div>
+            <button id="setBrBtn" class="btn-secondary btn-small" disabled>Set</button>
+          </div>
+        </div>
+        <div style="margin-top:12px" class="controls">
+          <button id="applyCornersBtn" class="btn-primary" disabled>Apply 4 Corners</button>
+          <button id="setCenterBtn" class="btn-secondary" disabled>Set Default Center</button>
+        </div>
+      </div>
+    </div>
+    
+    <div class="row">
+      <div class="col card">
+        <h3 style="margin:0 0 8px 0">Upload & Prepare</h3>
+        <div class="form-group">
+          <input id="imageInput" type="file" accept="image/*">
+          <select id="resolutionSelect">
+            <option value="low">Low (fast)</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High (slow)</option>
+          </select>
+        </div>
+        <div style="margin-top:8px" class="controls">
+          <button id="processBtn" class="btn-primary" disabled>Process Image</button>
+          <button id="previewPathBtn" class="btn-secondary" disabled>Preview Path</button>
+          <button id="drawBtn" class="btn-primary" disabled>Start Drawing</button>
+        </div>
+        <div class="image-compare">
+          <div class="image-box"><div class="small"><strong>Original</strong></div><img id="originalImagePreview" alt="Original" style="display:none"></div>
+          <div class="image-box"><div class="small"><strong>Line Art</strong></div><img id="lineartImagePreview" alt="Lineart" style="display:none"></div>
+          <div class="image-box"><div class="small"><strong>Vector / Path</strong></div><img id="vectorImagePreview" alt="Vector" style="display:none"></div>
+        </div>
+      </div>
+      
+      <div class="col card">
+        <h3 style="margin:0 0 8px 0">Drawing Controls & Progress</h3>
+        <div class="controls">
+          <button id="pauseBtn" class="btn-secondary" disabled>Pause</button>
+          <button id="resumeBtn" class="btn-secondary" disabled>Resume</button>
+          <button id="stopBtn" class="btn-danger" disabled>Stop</button>
+        </div>
+        <div style="margin-top:12px" class="progress-wrap">
+          <div class="progress-container"><div id="progressBar" class="progress-bar"></div></div>
+          <div class="progress-meta">
+            <div id="progressText">Progress: 0%</div>
+            <div id="timeMeta" class="small">Elapsed: 0s | ETA: -</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col card">
+        <h3 style="margin:0 0 8px 0">Path Preview</h3>
+        <canvas id="previewCanvas"></canvas>
+        <div style="margin-top:8px" class="small">Displays a preview of the drawing path on screen (not a real-time simulation).</div>
+      </div>
+      <div class="col card">
+        <h3 style="margin:0 0 8px 0">Log Console</h3>
+        <div id="logBox" class="log-box"></div>
+        <div style="margin-top:8px; display:flex; gap:8px; justify-content:space-between; align-items:center">
+          <div class="small">Real-time logs from actions</div>
+          <div><button id="clearLogBtn" class="btn-secondary">Clear</button><button id="downloadLogBtn" class="btn-secondary">Download</button></div>
+        </div>
+      </div>
+    </div>
+
+    <footer>Dobot Drawing App for Hardware Control</footer>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <div id="helpModal" class="modal" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h2>How to Use the Dobot Drawing App</h2>
+      <p style="color:var(--muted)">This guide will walk you through the steps from setup to starting a drawing.</p>
+      
+      <h3>Step-by-Step Instructions</h3>
+      <ol style="color:#ddd;line-height:1.6">
+        <li><strong>Preparation:</strong> Ensure the Dobot Magician is powered on and connected to the computer via USB.</li>
+        <li><strong>Connect Dobot:</strong> Press the <strong>Connect Dobot</strong> button. The application will automatically find the connected Dobot. When successful, the status will change to "Connected" and the controls will be enabled.</li>
+        <li><strong>Calibrate Drawing Area (Very Important):</strong>
+            <ul>
+                <li><strong>Method 1 (Recommended):</strong> Use jogging controls (from another program or a remote) to move the Dobot's pen tip to the top-left corner of your paper. Then, press the <strong>"Set"</strong> button next to the Top-Left input fields. The current coordinates will be automatically filled in. Repeat this for the other three corners (Top-Right, Bottom-Left, Bottom-Right).</li>
+                <li><strong>Method 2:</strong> Press the <strong>Set Default Center</strong> button to use a pre-configured standard drawing area.</li>
+                <li>After setting the corners, press <strong>Apply 4 Corners</strong> (for Method 1) or <strong>Set Default Center</strong> (for Method 2) to confirm the drawing area.</li>
+            </ul>
+        </li>
+        <li><strong>Prepare Image:</strong> Click the file input to upload your desired image, then press <strong>Process Image</strong>. The application will convert your image into Line Art and a Vector path suitable for drawing.</li>
+        <li><strong>Check Path:</strong> Press <strong>Preview Path</strong> to see an animated preview of the path the Dobot will follow. This helps verify the result before starting the actual drawing.</li>
+        <li><strong>Configure Settings:</strong> Adjust Speed, Pen offset, and Safety height as needed (see descriptions below).</li>
+        <li><strong>Start Drawing:</strong> When everything is ready, press <strong>Start Drawing</strong>. The Dobot will begin drawing the image based on the calculated path.</li>
+      </ol>
+
+      <h3>Button and Menu Explanations</h3>
+      <ul style="color:#ddd;line-height:1.6">
+        <li><strong>Connect / Disconnect:</strong> Connects to and disconnects from the Dobot.</li>
+        <li><strong>Speed (1-100%):</strong> Defines the overall drawing speed. A higher value means faster drawing.</li>
+        <li><strong>Pen offset (mm):</strong> Adjusts the pen's downward pressure. A positive value makes the pen press deeper. If lines are too faint, increase this value in small increments (e.g., 0.5).</li>
+        <li><strong>Safety height (mm):</strong> The height the pen lifts to when moving to a new path.</li>
+        <li><strong>Paper Calibration:</strong> Section for defining the drawing area on the paper.
+            <ul>
+                <li><strong>Set (next to each corner):</strong> Records the Dobot's current (X, Y) position for that corner.</li>
+                <li><strong>Apply 4 Corners:</strong> Confirms the use of the 4 custom-defined corner coordinates.</li>
+                <li><strong>Set Default Center:</strong> Uses a standard square drawing area in the center of the workspace.</li>
+            </ul>
+        </li>
+        <li><strong>Process Image:</strong> Converts the uploaded image into a drawable format for the Dobot.</li>
+        <li><strong>Preview Path:</strong> Shows an animated simulation of the drawing path on the screen.</li>
+        <li><strong>Start Drawing:</strong> Begins the drawing process.</li>
+        <li><strong>Pause:</strong> Temporarily halts the drawing. The Dobot will stop at its current position.</li>
+        <li><strong>Resume:</strong> Continues drawing from where it was paused.</li>
+        <li><strong>Stop:</strong> Immediately cancels the drawing. The Dobot will lift its arm and cease all operations.</li>
+      </ul>
+      <div style="text-align:right; margin-top:12px"><button id="closeHelpBtn" class="btn-primary">Close</button></div>
+    </div>
+  </div>
+
+<script>
+const toastEl = document.getElementById('toast');
+function showToast(msg, ms = 3000) {
+  toastEl.innerText = msg;
+  toastEl.style.display = 'block';
+  setTimeout(() => { toastEl.style.display = 'none'; }, ms);
+}
+const logBox = document.getElementById('logBox');
+function addLog(msg) {
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  const now = new Date().toLocaleTimeString();
+  line.textContent = `[${now}] ${msg}`;
+  logBox.appendChild(line);
+  logBox.scrollTop = logBox.scrollHeight;
+}
+function clearLog() { logBox.innerHTML = ''; }
+function downloadLog() {
+  const text = Array.from(logBox.querySelectorAll('.log-line')).map(e => e.textContent).join('\n');
+  const blob = new Blob([text], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `dobot_log_${new Date().toISOString()}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+const statusMessage = document.getElementById('statusMessage');
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const setCenterBtn = document.getElementById('setCenterBtn');
+const applyCornersBtn = document.getElementById('applyCornersBtn');
+const processBtn = document.getElementById('processBtn');
+const previewPathBtn = document.getElementById('previewPathBtn');
+const drawBtn = document.getElementById('drawBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const resumeBtn = document.getElementById('resumeBtn');
+const stopBtn = document.getElementById('stopBtn');
+const imageInput = document.getElementById('imageInput');
+const originalImagePreview = document.getElementById('originalImagePreview');
+const lineartImagePreview = document.getElementById('lineartImagePreview');
+const vectorImagePreview = document.getElementById('vectorImagePreview');
+const progressBar = document.getElementById('progressBar');
+const progressText = document.getElementById('progressText');
+const timeMeta = document.getElementById('timeMeta');
+const dobInfo = { container: document.getElementById('dobotInfo'), model: document.getElementById('dobotModel'), port: document.getElementById('dobotPort') };
+
+const cornerInputs = {
+    tl_x: document.getElementById('tl_x'), tl_y: document.getElementById('tl_y'),
+    tr_x: document.getElementById('tr_x'), tr_y: document.getElementById('tr_y'),
+    bl_x: document.getElementById('bl_x'), bl_y: document.getElementById('bl_y'),
+    br_x: document.getElementById('br_x'), br_y: document.getElementById('br_y'),
+};
+const setCornerBtns = {
+    tl: document.getElementById('setTlBtn'), tr: document.getElementById('setTrBtn'),
+    bl: document.getElementById('setBlBtn'), br: document.getElementById('setBrBtn'),
+};
+
+let lineartFilename = '', vectorFilename = '';
+let pollingIntervalId = null;
+let drawingStartTime = null;
+let previewImg = { original:null, lineart:null, vector:null };
+let currentPreviewAnimation = null;
+
+function setStatus(msg, type='disconnected') {
+  statusMessage.textContent = 'Status: ' + msg;
+  statusMessage.className = `status-box status-${type}`;
+}
+function showProgress(percent, message) {
+  if (percent < 0) percent = 0; if (percent > 100) percent = 100;
+  progressBar.style.width = percent + '%';
+  progressText.textContent = `Progress: ${percent}% — ${message || ''}`;
+  const elapsedSec = drawingStartTime ? Math.floor((Date.now() - drawingStartTime)/1000) : 0;
+  let etaText = '-';
+  if (percent > 0 && percent < 100 && drawingStartTime) {
+    const rate = percent / Math.max(1, elapsedSec);
+    const remainPercent = 100 - percent;
+    const remainSec = Math.round(remainPercent / rate);
+    etaText = formatDuration(remainSec);
+  } else if (percent >= 100) etaText = 'Done';
+  timeMeta.textContent = `Elapsed: ${formatDuration(elapsedSec)} | ETA: ${etaText}`;
+}
+function resetProgress() {
+  progressBar.style.width = '0%';
+  progressText.textContent = 'Progress: 0%';
+  timeMeta.textContent = 'Elapsed: 0s | ETA: -';
+  drawingStartTime = null;
+}
+function formatDuration(sec) {
+  if (!sec) return '0s'; if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec/60); const s = sec % 60;
+  return `${m}m ${s}s`;
+}
+
+document.getElementById('helpBtn').addEventListener('click', ()=> document.getElementById('helpModal').style.display='flex');
+document.getElementById('closeHelpBtn').addEventListener('click', ()=> document.getElementById('helpModal').style.display='none');
+document.getElementById('helpModal').addEventListener('click',(e)=>{ if(e.target===document.getElementById('helpModal')) document.getElementById('helpModal').style.display='none' });
+
+async function apiPost(path, body=null, isForm=false) {
+  try {
+    const opts = { method:'POST' };
+    if (isForm) opts.body = body;
+    else { opts.headers = {'Content-Type':'application/json'}; opts.body = JSON.stringify(body || {}); }
+    const res = await fetch(path, opts);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  } catch (err) {
+    addLog(`API ${path} error: ${err.message}`);
+    return { status:'error', message:err.message };
+  }
+}
+
+connectBtn.addEventListener('click', async () => {
+  setStatus('Connecting...', 'loading');
+  addLog('Attempting to connect to Dobot...');
+  
+  const res = await apiPost('/connect');
+  if (res && res.status.includes('success')) {
+    setStatus(res.message || 'Connected', 'connected');
+    dobInfo.container.style.display = 'block'; dobInfo.model.textContent = res.model || 'Unknown'; dobInfo.port.textContent = res.port || '-';
+    connectBtn.disabled = true; disconnectBtn.disabled = false; setCenterBtn.disabled = false; applyCornersBtn.disabled = false;
+    Object.values(setCornerBtns).forEach(btn => btn.disabled = false);
+    processBtn.disabled = false;
+    addLog('Connected: ' + (res.message || JSON.stringify(res))); showToast('Dobot connected');
+  } else {
+    setStatus(res.message || 'Connection failed', 'disconnected');
+    addLog('Connection failed: ' + (res.message || JSON.stringify(res))); showToast('Connection failed');
+  }
+});
+
+disconnectBtn.addEventListener('click', async () => {
+  setStatus('Disconnecting...', 'loading'); addLog('Disconnecting from Dobot...');
+  
+  const res = await apiPost('/disconnect');
+  if (res.status?.includes('success')) {
+    setStatus(res.message || 'Disconnected', 'disconnected'); dobInfo.container.style.display = 'none';
+    connectBtn.disabled = false; disconnectBtn.disabled = true; setCenterBtn.disabled = true; applyCornersBtn.disabled = true; processBtn.disabled = true;
+    Object.values(setCornerBtns).forEach(btn => btn.disabled = true);
+    drawBtn.disabled = true; previewPathBtn.disabled = true;
+    addLog('Disconnected: ' + (res.message||'')); showToast('Disconnected');
+  } else {
+    setStatus(res.message || 'Disconnect failed','disconnected');
+    addLog('Disconnect failed: ' + (res.message||'')); showToast('Disconnect failed');
+  }
+});
+
+async function setCurrentPositionForCorner(cornerPrefix) {
+    addLog(`Requesting current position for ${cornerPrefix.toUpperCase()}...`);
+    showToast(`Getting pos for ${cornerPrefix.toUpperCase()}`);
+    try {
+        // ⭐️ แก้ไข: ใช้ apiPost แทน fetch ตรงๆ เพื่อความสอดคล้อง (แม้ GET จะใช้ fetch ธรรมดาก็ได้)
+        const res = await fetch('/get_position'); 
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+
+        if (data.status === 'success') {
+            cornerInputs[`${cornerPrefix}_x`].value = data.x;
+            cornerInputs[`${cornerPrefix}_y`].value = data.y;
+            addLog(`Set ${cornerPrefix.toUpperCase()} to (X: ${data.x}, Y: ${data.y})`);
+            showToast(`${cornerPrefix.toUpperCase()} position set!`);
+        } else {
+            throw new Error(data.message || 'Failed to get position from server.');
+        }
+    } catch (err) {
+        addLog(`Error getting position: ${err.message}`);
+        showToast('Error: Could not get position');
+    }
+}
+
+Object.keys(setCornerBtns).forEach(key => {
+    setCornerBtns[key].addEventListener('click', () => setCurrentPositionForCorner(key));
+});
+
+// ***************************************************************
+// ✅ FIX 2: เปลี่ยน /set_center เป็น /set_default_area (ถูกต้องแล้ว)
+// ***************************************************************
+setCenterBtn.addEventListener('click', async () => {
+  setStatus('Setting center...', 'loading'); addLog('Request: set default center point');
+  const res = await apiPost('/set_default_area');
+  if (res.status?.includes('success')) {
+    setStatus(res.message || 'Center set', 'connected');
+    addLog('Center: ' + (res.message||'')); showToast('Center set');
+  } else {
+    setStatus(res.message || 'Failed to set center', 'disconnected');
+    addLog('Set center failed: ' + (res.message||'')); showToast('Set center failed');
+  }
+});
+
+// ***************************************************************
+// ✅ FIX 1: เปลี่ยน /set_corners เป็น /set_paper_corners (ถูกต้องแล้ว)
+// ***************************************************************
+applyCornersBtn.addEventListener('click', async () => {
+    addLog('Applying 4 corner points...');
+    const corners = {
+        tl: [parseFloat(cornerInputs.tl_x.value), parseFloat(cornerInputs.tl_y.value)],
+        tr: [parseFloat(cornerInputs.tr_x.value), parseFloat(cornerInputs.tr_y.value)],
+        br: [parseFloat(cornerInputs.br_x.value), parseFloat(cornerInputs.br_y.value)],
+        bl: [parseFloat(cornerInputs.bl_x.value), parseFloat(cornerInputs.bl_y.value)],
+    };
+
+    for(const key in corners) {
+        if(isNaN(corners[key][0]) || isNaN(corners[key][1])) {
+            showToast('Error: All corner values must be numbers.');
+            addLog('Error: Invalid corner values.');
+            return;
+        }
+    }
+    
+    setStatus('Setting corners...', 'loading');
+    const res = await apiPost('/set_paper_corners', { corners });
+    if (res.status?.includes('success')) {
+        setStatus(res.message || 'Corners set', 'connected');
+        addLog('Corners set: ' + (res.message || ''));
+        showToast('4 corners applied');
+    } else {
+        setStatus(res.message || 'Failed to set corners', 'disconnected');
+        addLog('Set corners failed: ' + (res.message || ''));
+        showToast('Set corners failed');
+    }
+});
+
+
+imageInput.addEventListener('change',(e)=>{
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    originalImagePreview.src = ev.target.result; originalImagePreview.style.display = 'block';
+    lineartImagePreview.style.display = 'none'; vectorImagePreview.style.display = 'none';
+    if(previewImg.original) URL.revokeObjectURL(previewImg.original.src);
+    previewImg.original = new Image(); previewImg.original.src = ev.target.result;
+    previewImg.lineart = null; previewImg.vector = null;
+    drawBtn.disabled = true; processBtn.disabled = false; previewPathBtn.disabled = true;
+    addLog('Image selected: ' + file.name);
+  };
+  reader.readAsDataURL(file);
+});
+
+processBtn.addEventListener('click', async () => {
+  const file = imageInput.files[0]; if (!file) { alert('Please select an image file first.'); return; }
+  resetProgress(); setStatus('Processing image...', 'loading');
+  addLog('Started processing image...'); showToast('Processing image...');
+  const form = new FormData();
+  form.append('image', file);
+  form.append('resolution', document.getElementById('resolutionSelect').value);
+
+  const res = await apiPost('/process_image', form, true);
+  if (res?.status?.includes('success')) {
+    addLog('Process success: ' + (res.message || ''));
+    lineartImagePreview.src = res.lineart_url || ''; lineartImagePreview.style.display = (res.lineart_url ? 'block' : 'none');
+    vectorImagePreview.src = res.vector_url || ''; vectorImagePreview.style.display = (res.vector_url ? 'block' : 'none');
+    
+    previewImg.lineart = new Image(); previewImg.lineart.src = res.lineart_url;
+    previewImg.vector = new Image(); previewImg.vector.src = res.vector_url;
+
+    lineartFilename = res.lineart_filename || ''; vectorFilename = res.vector_filename || '';
+    drawBtn.disabled = false; previewPathBtn.disabled = false;
+    setStatus(res.message || 'Processed', 'connected'); showToast('Processing complete');
+  } else {
+    setStatus(res.message || 'Process failed', 'disconnected');
+    addLog('Process failed: ' + (res.message || JSON.stringify(res))); showToast('Process failed');
+  }
+});
+
+const previewCanvas = document.getElementById('previewCanvas'), previewCtx = previewCanvas.getContext('2d');
+function fitCanvasToContainer() {
+  const rect = previewCanvas.getBoundingClientRect(); const dpr = window.devicePixelRatio || 1;
+  previewCanvas.width = Math.floor(rect.width * dpr); previewCanvas.height = Math.floor((rect.height || 320) * dpr);
+  previewCtx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', fitCanvasToContainer); fitCanvasToContainer();
+
+async function previewDrawAnimation() {
+  if (currentPreviewAnimation) cancelAnimationFrame(currentPreviewAnimation);
+  if (!previewImg.vector) { addLog('No vector image to preview.'); return; }
+  
+  const img = previewImg.vector;
+  await new Promise(r => { if (img.complete && img.naturalWidth > 0) return r(); img.onload=r; img.onerror=r; });
+
+  fitCanvasToContainer();
+  previewCtx.fillStyle = '#fff';
+  const canvasW = previewCanvas.width / (window.devicePixelRatio||1);
+  const canvasH = previewCanvas.height / (window.devicePixelRatio||1);
+  previewCtx.fillRect(0,0, canvasW, canvasH);
+  
+  const imgRatio = img.width / img.height; let dw = canvasW, dh = canvasW / imgRatio;
+  if (dh > canvasH) { dh = canvasH; dw = canvasH * imgRatio; }
+  const dx = (canvasW - dw)/2, dy = (canvasH - dh)/2;
+  
+  const offscreen = new OffscreenCanvas(dw, dh);
+  const offCtx = offscreen.getContext('2d');
+  offCtx.drawImage(img, 0, 0, dw, dh);
+
+  addLog('Starting preview animation...');
+  let reveal = 0;
+  const totalFrames = 200;
+  function step() {
+    previewCtx.fillStyle = '#fff';
+    previewCtx.fillRect(0, 0, canvasW, canvasH);
+
+    const revealWidth = dw * (reveal / totalFrames);
+    previewCtx.save();
+    previewCtx.beginPath();
+    previewCtx.rect(dx, dy, revealWidth, dh);
+    previewCtx.clip();
+    previewCtx.drawImage(offscreen, dx, dy);
+    previewCtx.restore();
+
+    const penX = dx + revealWidth;
+    const penY = dy + dh/2;
+    previewCtx.fillStyle = 'red';
+    previewCtx.beginPath();
+    previewCtx.arc(penX, penY, 4, 0, Math.PI*2);
+    previewCtx.fill();
+
+    reveal++;
+    if (reveal <= totalFrames) {
+      currentPreviewAnimation = requestAnimationFrame(step);
+    } else {
+      previewCtx.drawImage(offscreen, dx, dy);
+      addLog('Preview animation complete.');
+    }
+  }
+  step();
+}
+previewPathBtn.addEventListener('click', previewDrawAnimation);
+
+drawBtn.addEventListener('click', async () => {
+  if (!lineartFilename && !vectorFilename) { alert('Please process an image before drawing.'); return; }
+  resetProgress(); setStatus('Starting drawing...', 'loading');
+  addLog('Start drawing requested'); drawingStartTime = Date.now();
+  
+  const body = {
+    // ⭐️ โค้ด Backend ใหม่จะดึงค่าจาก Global State ที่บันทึกไว้ตอน Process
+    // ⭐️ แต่เราจะส่งค่า Settings จากหน้าเว็บไปด้วย
+    speed: Number(document.getElementById('speedInput').value),
+    pen_offset: Number(document.getElementById('penOffsetInput').value),
+    safety_height: Number(document.getElementById('safetyHeightInput').value)
+  };
+  const res = await apiPost('/start_drawing', body);
+  if (res.status?.includes('success')) {
+    setStatus(res.message || 'Drawing started', 'loading');
+    addLog('Backend started drawing: ' + (res.message || ''));
+    pauseBtn.disabled = false; resumeBtn.disabled = true; stopBtn.disabled = false;
+    startPollingProgress();
+  } else {
+    setStatus(res.message || 'Start drawing failed', 'disconnected');
+    addLog('Start drawing failed: ' + (res.message || JSON.stringify(res)));
+    showToast('Start drawing failed');
+  }
+});
+
+async function fetchProgressOnce() {
+  try {
+    const r = await fetch('/progress');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } catch (err) {
+    addLog('Progress fetch error: ' + err.message);
+    return null;
+  }
+}
+async function startPollingProgress() {
+  if (pollingIntervalId) clearInterval(pollingIntervalId);
+  pollingIntervalId = setInterval(async () => {
+    const d = await fetchProgressOnce();
+    if (d) updateProgressFromServer(d);
+  }, 1000);
+}
+function stopPollingProgress() { if (pollingIntervalId) { clearInterval(pollingIntervalId); pollingIntervalId = null; } }
+
+
+// ==============================================================================
+// ⬇️⬇️⬇️ จุดที่แก้ไข (ตามคำขอที่ 2) ⬇️⬇️⬇️
+// ==============================================================================
+function updateProgressFromServer(d) {
+  if (d.status === 'error') {
+    addLog('Backend error: ' + d.message); setStatus('Error', 'disconnected');
+    stopPollingProgress(); showToast('Error during drawing'); return;
+  }
+  const p = d.progress || 0;
+  showProgress(p, d.message || 'Drawing');
+
+  // ⭐️⭐️⭐️ NEW CODE TO SHOW LIVE PROGRESS IMAGE ⭐️⭐️⭐️
+  // (d.progress_image_url ถูกส่งมาจาก /progress endpoint ใน app.py)
+  if (d.progress_image_url) {
+    // แสดงภาพ Progress ที่กำลังวาดในช่อง "Vector / Path"
+    vectorImagePreview.src = d.progress_image_url; 
+    vectorImagePreview.style.display = 'block';
+  }
+  // ⭐️⭐️⭐️ END NEW CODE ⭐️⭐️⭐️
+
+  if (p >= 100 || d.status !== 'drawing') {
+    if(d.status !== 'paused') {
+        addLog('Drawing finished (server).'); setStatus('Drawing complete', 'connected');
+        stopPollingProgress(); pauseBtn.disabled = true; resumeBtn.disabled = true; stopBtn.disabled = true;
+        showToast('Drawing complete');
+        
+        // ⭐️ NEW: เมื่อวาดเสร็จ ให้แสดงภาพ Vector Plan ตัวเต็มกลับมา
+        if (previewImg.vector) {
+            vectorImagePreview.src = previewImg.vector.src;
+        }
+    }
+  } else setStatus('Drawing...', 'loading');
+}
+// ==============================================================================
+// ⬆️⬆️⬆️ สิ้นสุดจุดที่แก้ไข ⬆️⬆️⬆️
+// ==============================================================================
+
+
+pauseBtn.addEventListener('click', async () => {
+  addLog('Pause requested');
+  const res = await apiPost('/pause');
+  if (res.status?.includes('success')) {
+    pauseBtn.disabled = true; resumeBtn.disabled = false; setStatus(res.message || 'Paused', 'loading');
+    addLog('Paused: ' + (res.message||'')); showToast('Paused');
+  } else { addLog('Pause failed: ' + (res.message||'')); showToast('Pause failed'); }
+});
+resumeBtn.addEventListener('click', async () => {
+  addLog('Resume requested');
+  const res = await apiPost('/resume');
+  if (res.status?.includes('success')) {
+    pauseBtn.disabled = false; resumeBtn.disabled = true; setStatus(res.message || 'Resumed', 'loading');
+    addLog('Resumed: ' + (res.message||'')); showToast('Resumed');
+  } else { addLog('Resume failed: ' + (res.message||'')); showToast('Resume failed'); }
+});
+stopBtn.addEventListener('click', async () => {
+  addLog('Stop requested');
+  const res = await apiPost('/stop');
+  if (res.status?.includes('success')) {
+    stopPollingProgress(); 
+    resetProgress();
+    setStatus(res.message || 'Stopped', 'connected');
+    pauseBtn.disabled = true; resumeBtn.disabled = true; stopBtn.disabled = true;
+    addLog('Stopped: ' + (res.message||'')); showToast('Stopped');
+  } else { addLog('Stop failed: ' + (res.message||'')); showToast('Stop failed'); }
+});
+
+document.getElementById('clearLogBtn').addEventListener('click', ()=> { clearLog(); addLog('Log cleared'); });
+document.getElementById('downloadLogBtn').addEventListener('click', downloadLog);
+
+setStatus('Disconnected', 'disconnected');
+addLog('Application loaded. Please connect Dobot to begin.');
+</script>
+</body>
+</html>
