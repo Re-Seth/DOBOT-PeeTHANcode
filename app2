@@ -1,0 +1,770 @@
+import numpy as np
+import serial.tools.list_ports
+from pydobot import Dobot
+import time
+import os
+import matplotlib
+matplotlib.use('Agg') # ตั้งค่า Matplotlib ไม่ให้ใช้ GUI
+import matplotlib.pyplot as plt
+import cv2  
+import threading # สำหรับการวาดแบบไม่บล็อก Server
+from flask import Flask, request, jsonify, send_from_directory, render_template
+
+try:
+    from PIL import Image
+    RESAMPLE_FILTER = Image.Resampling.LANCZOS
+except ImportError:
+    # สำหรับเวอร์ชันเก่าที่ไม่มี Image.Resampling
+    RESAMPLE_FILTER = Image.LANCZOS 
+
+# ================== CONFIG ==================
+OUTPUT_DIR_BASE = 'drawing_experiments_combined' 
+
+CANNY_THRESHOLD_LOWER = 30  
+CANNY_THRESHOLD_UPPER = 90  
+MAX_OUTPUT_DIMENSION = 400  
+GAUSSIAN_BLUR_SIZE = (3, 3)  
+CONTOUR_RETRIEVAL_MODE = cv2.RETR_LIST
+CONTOUR_APPROX_METHOD = cv2.CHAIN_APPROX_NONE
+MIN_CONTOUR_AREA = 5  
+MAX_CONNECT_DISTANCE = 1.0 # [mm]  
+CONTOUR_APPROX_EPSILON = 0.0005  
+
+PEN_DOWN_Z = -39
+DOBOT_SPEED = 1500
+DOBOT_ACCELERATION = 1000
+RETRY_ATTEMPTS = 3
+JUMP_HEIGHT_OFFSET = 10 # mm
+
+# มุมกระดาษเริ่มต้น (พิกัด Dobot mm)
+DEFAULT_PAPER_CORNERS = np.float32([
+    [88.06, 31.66], [223.18, 38.10], [223.18, -73.39], [88.06, -54.85]
+])
+
+# ================== Global State Variables (สำหรับ Web Server) ==================
+# ⭐️ แก้ไข: ลบ template_folder='.' เพื่อใช้มาตรฐาน Flask (templates/)
+app = Flask(__name__) 
+
+g_bot = None
+g_drawing_state = {
+    'status': 'idle', # idle, drawing, paused, error, connected
+    'progress': 0,
+    'message': 'Waiting',
+    'progress_image_url': None
+}
+g_stop_drawing_flag = False
+g_drawing_thread = None
+
+OUTPUT_UPLOAD_DIR = os.path.join(OUTPUT_DIR_BASE, 'uploads')
+OUTPUT_CURRENT_RUN_PATH = os.path.join(OUTPUT_DIR_BASE, 'current_run_web') 
+os.makedirs(OUTPUT_UPLOAD_DIR, exist_ok=True)
+os.makedirs(OUTPUT_CURRENT_RUN_PATH, exist_ok=True)
+
+g_current_paper_corners = DEFAULT_PAPER_CORNERS.copy()
+g_pen_settings = {
+    'speed_percent': 50,
+    'pen_offset': 0.0,
+    'safety_height': 10.0
+}
+g_generated_paths = {
+    'sorted_paths_mm': [],
+    'sorted_lengths_mm': [],
+    'bg_img': None,
+    'm_inv': None,
+    'image_dims': (400, 400) # (w, h) ของภาพที่ถูกปรับขนาด
+}
+# ==============================================================================
+
+# ----------------- Utility Functions -----------------
+
+
+def find_dobot_port():
+    ports = serial.tools.list_ports.comports()
+    dobot_port = None
+    for p in ports:
+        if not hasattr(p, 'description') or not hasattr(p, 'device'):
+            continue
+        is_dobot = "USB" in p.description.upper() or \
+                   "SERIAL" in p.description.upper() or \
+                   "CH340" in p.description.upper() or \
+                   "CP210" in p.description.upper()
+        is_dobot = is_dobot or \
+                   "MODEM" in p.device.upper() or \
+                   "USB" in p.device.upper() 
+        if is_dobot:
+            print(f"✅ พบพอร์ตที่น่าจะเป็น Dobot: {p.device} ({p.description})")
+            dobot_port = p.device
+            break
+    if not dobot_port:
+        print("⚠️ ไม่พบ Dobot")
+    return dobot_port
+
+def safe_move(bot, x, y, z, r=0, wait=True):
+    if bot is None: return True
+    for i in range(RETRY_ATTEMPTS):
+        try:
+            bot.move_to(x, y, z, r, wait=wait)
+            return True
+        except Exception:
+            if i < RETRY_ATTEMPTS - 1: time.sleep(0.1)
+    return False
+
+def safe_jump(bot, x, y, z, r=0, wait=True):
+    if bot is None: return True
+    current_pos = [0,0,0,0]
+    if bot:
+        try:
+            current_pos = bot.pose()
+        except Exception:
+            pass 
+    for i in range(RETRY_ATTEMPTS):
+        try:
+            if bot: 
+                 bot.move_to(current_pos[0], current_pos[1], z + JUMP_HEIGHT_OFFSET, r, wait=True)
+            bot.move_j(x, y, z, r, wait=wait)
+            return True
+        except Exception:
+            if i < RETRY_ATTEMPTS - 1: time.sleep(0.1)
+    return False
+
+def create_progress_image(base_img_bgr, sorted_paths_mm, current_set_index, M_inv, path_prefix, is_final=False):
+    """สร้างและบันทึกภาพ Progress (CV2) โดยใช้ M_inv ในการแปลงพิกัด mm -> px"""
+    global g_drawing_state, g_current_paper_corners
+    
+    w, h = g_generated_paths['image_dims']
+    preview = np.full((h, w, 3), 255, dtype=np.uint8) 
+    
+    # วาดขอบกระดาษ (ในพิกัดภาพ)
+    img_h, img_w = base_img_bgr.shape[:2]
+    img_corners = np.float32([[0, 0], [img_w, 0], [img_w, img_h], [0, img_h]])
+    paper_corners_px = cv2.perspectiveTransform(g_current_paper_corners.reshape(-1, 1, 2), M_inv).reshape(-1, 2)
+    cv2.polylines(preview, [paper_corners_px[[0,1,2,3,0]].astype(np.int32)], isClosed=True, color=(0, 165, 0), thickness=1, lineType=cv2.LINE_AA) 
+
+    # เส้นที่วาดเสร็จแล้ว (สีฟ้า)
+    if current_set_index > 0:
+        for path_mm in sorted_paths_mm[:current_set_index]:
+            path_px = cv2.perspectiveTransform(path_mm, M_inv).reshape(-1, 2)
+            cv2.polylines(preview, [path_px.astype(np.int32)], isClosed=False, color=(255, 0, 0), thickness=2)
+
+    # เส้นวาดปัจจุบัน (สีเขียว)
+    if not is_final and current_set_index < len(sorted_paths_mm):
+        path_mm_current = sorted_paths_mm[current_set_index]
+        path_px_current = cv2.perspectiveTransform(path_mm_current, M_inv).reshape(-1, 2)
+        cv2.polylines(preview, [path_px_current.astype(np.int32)], isClosed=False, color=(0, 255, 0), thickness=3) 
+
+    # บันทึกทับไฟล์เดิมเสมอ
+    filename_current = os.path.join(path_prefix, f"current_progress.png")
+    cv2.imwrite(filename_current, preview)
+    
+    # อัปเดต Global State ให้หน้าเว็บดึงไปแสดงผล
+    if g_drawing_state['status'] != 'idle':
+        g_drawing_state['progress_image_url'] = f"/output/current_progress.png?t={time.time()}"
+
+
+def euclidean_distance(p1, p2):
+    if p1 is None or p2 is None:
+        return float('inf')
+    return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+
+# --- (ฟังก์ชัน sort_contours_for_efficiency) ---
+def sort_contours_for_efficiency(initial_paths_data, max_connect_dist):
+    valid_paths_data = [item for item in initial_paths_data if item['path'] is not None and len(item['path']) > 1]
+    if not valid_paths_data: return [], []
+    valid_paths_data.sort(key=lambda p: (p['centroid_mm'][1], p['centroid_mm'][0])) 
+    remaining_paths_data = list(valid_paths_data) 
+    all_path_sets = [] 
+    def find_best_next_path(current_end_point_mm, current_remaining_data):
+        best_i_in_data = -1
+        min_connection_distance = float('inf')
+        reverse_flag = False
+        for i, item in enumerate(current_remaining_data):
+            next_path = item['path'] 
+            dist_to_start = euclidean_distance(current_end_point_mm, next_path[0])
+            dist_to_end = euclidean_distance(current_end_point_mm, next_path[-1])
+            if dist_to_start < min_connection_distance and dist_to_start <= max_connect_dist:
+                min_connection_distance = dist_to_start
+                best_i_in_data = i
+                reverse_flag = False
+            if dist_to_end < min_connection_distance and dist_to_end <= max_connect_dist:
+                min_connection_distance = dist_to_end
+                best_i_in_data = i
+                reverse_flag = True
+        if best_i_in_data != -1:
+            return best_i_in_data, reverse_flag, min_connection_distance
+        else:
+            return -1, False, float('inf')
+    while remaining_paths_data:
+        current_item = remaining_paths_data.pop(0) 
+        current_path_segment = current_item['path'].copy()
+        while True:
+            current_end_point_mm = current_path_segment[-1] 
+            best_i, reverse_flag, dist = find_best_next_path(current_end_point_mm, remaining_paths_data)
+            if best_i != -1:
+                next_item_to_add = remaining_paths_data.pop(best_i) 
+                next_path_to_add = next_item_to_add['path']
+                if reverse_flag:
+                    next_path_to_add = next_path_to_add[::-1]
+                current_path_segment = np.vstack((current_path_segment, next_path_to_add))
+            else:
+                length = np.sum(np.sqrt(np.sum(np.diff(current_path_segment, axis=0) ** 2, axis=1)))
+                all_path_sets.append({'path': current_path_segment, 'length': length, 'centroid_mm': current_item['centroid_mm']})
+                break
+    all_path_sets.sort(key=lambda p: p['length'], reverse=True)
+    main_outline_paths = all_path_sets[:5] 
+    detail_paths = all_path_sets[5:]
+    detail_paths.sort(key=lambda p: (p['centroid_mm'][1], p['centroid_mm'][0])) 
+    final_sorted_paths = main_outline_paths + detail_paths
+    sorted_lengths = [p['length'] for p in final_sorted_paths]
+    sorted_paths_final = [p['path'].reshape(-1, 1, 2) for p in final_sorted_paths]
+    return sorted_paths_final, sorted_lengths
+
+# --- (ฟังก์ชัน filter_overlapping_contours) ---
+def filter_overlapping_contours(all_contours_px):
+    contours_with_area = [(cnt, cv2.contourArea(cnt)) for cnt in all_contours_px]
+    contours_with_area.sort(key=lambda x: x[1])
+    final_contours = []
+    for i, (small_cnt, small_area) in enumerate(contours_with_area):
+        if small_area < MIN_CONTOUR_AREA:
+            continue
+        is_redundant = False
+        for j in range(i + 1, len(contours_with_area)):
+            large_cnt, large_area = contours_with_area[j]
+            M = cv2.moments(small_cnt)
+            if M["m00"] == 0: continue
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            distance = cv2.pointPolygonTest(large_cnt, (cx, cy), False) 
+            if distance > 0:
+                is_redundant = True
+                break
+        if is_redundant: continue 
+        for approved_cnt in final_contours:
+             M = cv2.moments(small_cnt)
+             if M["m00"] == 0: continue
+             cx = int(M["m10"] / M["m00"])
+             cy = int(M["m01"] / M["m00"])
+             distance = cv2.pointPolygonTest(approved_cnt, (cx, cy), False)
+             if distance > 0 and cv2.contourArea(approved_cnt) > small_area:
+                 is_redundant = True
+                 break
+        if not is_redundant:
+            final_contours.append(small_cnt)
+    return final_contours
+
+
+def run_experiment(exp_name, contour_approx_epsilon, max_connect_distance, base_paths_px, base_img_bgr, paper_corners_mm):
+    
+    CURRENT_RUN_TEST_PATH = OUTPUT_CURRENT_RUN_PATH 
+    
+    h, w, _ = base_img_bgr.shape
+    base_img_contour_bg = np.full((h, w, 3), 255, dtype=np.uint8)
+
+    reprocessed_paths_data_mm = [] 
+    
+    img_h, img_w = base_img_bgr.shape[:2]
+    img_corners = np.float32([[0, 0], [img_w, 0], [img_w, img_h], [0, img_h]])
+    M = cv2.getPerspectiveTransform(img_corners, paper_corners_mm)
+    M_inv = cv2.getPerspectiveTransform(paper_corners_mm, img_corners) 
+
+    for cnt_px in base_paths_px: 
+        perimeter = cv2.arcLength(cnt_px, True)
+        approx_px = cv2.approxPolyDP(cnt_px, contour_approx_epsilon * perimeter, True) 
+        if len(approx_px) > 1:
+            pts_transformed_mm = cv2.perspectiveTransform(approx_px.astype(np.float32), M).reshape(-1, 2)
+            M_cnt = cv2.moments(approx_px) 
+            if M_cnt["m00"] != 0:
+                cx_px = int(M_cnt["m10"] / M_cnt["m00"])
+                cy_px = int(M_cnt["m01"] / M_cnt["m00"])
+                centroid_px = np.array([[[cx_px, cy_px]]], dtype=np.float32)
+                centroid_mm = cv2.perspectiveTransform(centroid_px, M).reshape(-1, 2)[0]
+            else:
+                centroid_mm = pts_transformed_mm[0] 
+            reprocessed_paths_data_mm.append({'path': pts_transformed_mm, 'centroid_mm': centroid_mm})
+
+    all_final_paths_mm, all_final_lengths = sort_contours_for_efficiency(reprocessed_paths_data_mm, max_connect_distance)
+    total_drawing_length = sum(all_final_lengths)
+    num_sets = len(all_final_paths_mm)
+    print(f"  -> ผลลัพธ์: ชุดเส้นรวม (Sets): {num_sets}, ความยาวรวม: {total_drawing_length:.1f} mm")
+
+    if num_sets > 0:
+        fig, ax = plt.subplots(figsize=(8, 8))
+        fig.patch.set_facecolor('white')
+        ax.set_facecolor('white')
+        ax.set_xlim(0, w)
+        ax.set_ylim(h, 0) 
+        ax.set_aspect('equal')
+        
+        paper_corners_px = cv2.perspectiveTransform(paper_corners_mm.reshape(-1, 1, 2), M_inv).reshape(-1, 2)
+        ax.plot(paper_corners_px[[0,1,2,3,0], 0], paper_corners_px[[0,1,2,3,0], 1], 'g--', linewidth=1, label='Paper Area')
+
+        prev_end_point = None 
+        for i, path_mm in enumerate(all_final_paths_mm):
+            path_px = cv2.perspectiveTransform(path_mm, M_inv).reshape(-1, 2)
+            ax.plot(path_px[:, 0], path_px[:, 1], 'b-', linewidth=2, label='Drawing Path' if i == 0 else "")
+            if prev_end_point is not None:
+                prev_end_point_px = cv2.perspectiveTransform(np.array([[prev_end_point]]), M_inv).reshape(-1, 2)[0]
+                current_start_point_px = path_px[0]
+                ax.plot([prev_end_point_px[0], current_start_point_px[0]], 
+                         [prev_end_point_px[1], current_start_point_px[1]], 
+                         'r--', linewidth=1, label='Jump Path' if i == 0 else "")
+            prev_end_point = path_mm[-1][0] 
+            
+        ax.set_title(f"Drawing Plan (Sets: {num_sets}, Len: {total_drawing_length:.0f} mm)")
+        ax.axis("off")
+        plt.tight_layout()
+        
+        plan_path = os.path.join(CURRENT_RUN_TEST_PATH, 'drawing_plan.png')
+        try:
+            plt.savefig(plan_path)
+        except Exception as e:
+            print(f"Error saving plot: {e}")
+        plt.close(fig) 
+        
+        # สร้างภาพ Progress ภาพสุดท้าย (ภาพที่เสร็จสมบูรณ์)
+        create_progress_image(base_img_contour_bg, all_final_paths_mm, num_sets, M_inv, CURRENT_RUN_TEST_PATH, is_final=True)
+    else:
+        print("  -> ⚠️ ไม่พบชุดเส้นทางวาด")
+    
+    return num_sets, total_drawing_length, all_final_paths_mm, all_final_lengths, base_img_contour_bg, M_inv, (img_w, img_h)
+
+# ==============================================================================
+# ⬇️⬇️⬇️ ฟังก์ชันสำหรับ Thread การวาด ⬇️⬇️⬇️
+# ==============================================================================
+
+def drawing_thread_function():
+    """ฟังก์ชันนี้จะรันใน Thread แยก เพื่อวาดโดยไม่บล็อก Web Server"""
+    global g_bot, g_drawing_state, g_generated_paths, g_pen_settings, g_stop_drawing_flag, g_drawing_thread
+
+    if g_bot is None or not g_generated_paths['sorted_paths_mm']:
+        g_drawing_state.update({'status': 'error', 'progress': 0, 'message': 'Path/Dobot Error'})
+        g_drawing_thread = None 
+        return
+
+    sorted_paths_final_mm = g_generated_paths['sorted_paths_mm']
+    sorted_lengths = g_generated_paths['sorted_lengths_mm']
+    preview_img_bgr = g_generated_paths['bg_img']
+    M_inv = g_generated_paths['m_inv']
+    
+    pen_z_down = PEN_DOWN_Z + g_pen_settings['pen_offset']
+    pen_z_up = pen_z_down + g_pen_settings['safety_height']
+    
+    speed_percent = g_pen_settings['speed_percent']
+    dobot_speed_val = max(1000, 1000 + (speed_percent / 100.0) * (7000)) 
+    dobot_accel_val = max(1000, dobot_speed_val * 0.8)
+
+    g_drawing_state.update({'status': 'drawing', 'progress': 0, 'message': 'Initializing...'})
+    g_stop_drawing_flag = False
+
+    try:
+        g_bot.speed(dobot_speed_val, dobot_accel_val)
+        
+        start_index = 0
+        offset_vector = np.array([0.0, 0.0]) 
+
+        # บันทึกภาพสถานะเริ่มต้น (Contour Set 0)
+        create_progress_image(preview_img_bgr, sorted_paths_final_mm, start_index, M_inv, OUTPUT_CURRENT_RUN_PATH, is_final=False)
+
+        # Jump ไปมุมกระดาษ Top-Left ก่อนเริ่ม (ใช้ g_current_paper_corners)
+        safe_jump(g_bot, g_current_paper_corners[0][0], g_current_paper_corners[0][1], pen_z_up, wait=True) 
+        time.sleep(0.5)
+
+        total_length_to_draw = sum(sorted_lengths[start_index:])
+        current_length_drawn = 0
+        
+        last_pen_down_x, last_pen_down_y = g_current_paper_corners[0][0], g_current_paper_corners[0][1] 
+
+        for i in range(start_index, len(sorted_paths_final_mm)):
+            
+            # ตรวจสอบ Flag การหยุด/Pause
+            if g_stop_drawing_flag:
+                g_drawing_state['message'] = 'Stopped by user'
+                break
+                
+            while g_drawing_state['status'] == 'paused':
+                if g_stop_drawing_flag:
+                    break
+                time.sleep(0.5)
+
+            if g_stop_drawing_flag:
+                break
+
+            ci = i + 1
+            pts_original = sorted_paths_final_mm[i] 
+            if pts_original is None or len(pts_original) < 2:
+                continue
+            
+            pts_transformed = (pts_original.reshape(-1, 2) + offset_vector).reshape(-1, 1, 2)
+            
+            # สร้างภาพ Progress ก่อนวาดเส้นนี้
+            create_progress_image(preview_img_bgr, sorted_paths_final_mm, i, M_inv, OUTPUT_CURRENT_RUN_PATH, is_final=False)
+
+            # 1. Jump
+            sx, sy = pts_transformed[0][0]
+            safe_jump(g_bot, sx, sy, pen_z_up, wait=True) 
+            
+            # 2. ลดปากกา
+            safe_move(g_bot, sx, sy, pen_z_down, wait=True)
+            
+            # 3. วาด
+            for p in pts_transformed[1:]:
+                x, y = p[0]
+                safe_move(g_bot, x, y, pen_z_down, wait=False) 
+                last_pen_down_x, last_pen_down_y = x, y
+
+            # 4. รอและยกปากกา
+            if g_bot is not None:
+                g_bot.wait(1) 
+            safe_move(g_bot, last_pen_down_x, last_pen_down_y, pen_z_up, wait=True) 
+
+            # 5. คำนวณความคืบหน้า
+            current_length_drawn += sorted_lengths[i]
+            percent_done = (current_length_drawn / total_length_to_draw) * 100
+            
+            g_drawing_state['progress'] = round(percent_done, 1)
+            g_drawing_state['message'] = f'Drawing path {ci}/{len(sorted_paths_final_mm)}'
+            
+        
+        # 6. สิ้นสุดการวาด
+        safe_move(g_bot, last_pen_down_x, last_pen_down_y, pen_z_up, wait=True)
+        
+        if g_stop_drawing_flag:
+            g_drawing_state.update({'status': 'connected', 'progress': 0, 'message': 'Stopped by user'})
+        else:
+            # บันทึกภาพเสร็จสมบูรณ์
+            create_progress_image(preview_img_bgr, sorted_paths_final_mm, len(sorted_paths_final_mm), M_inv, OUTPUT_CURRENT_RUN_PATH, is_final=True)
+            g_drawing_state.update({'status': 'connected', 'progress': 100, 'message': 'Drawing complete'})
+
+        print(f"🎉 Thread การวาดสิ้นสุด: {g_drawing_state['message']}")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        g_drawing_state.update({'status': 'error', 'progress': 0, 'message': f'Drawing error: {e}'})
+        
+    finally:
+        g_stop_drawing_flag = False
+        g_drawing_thread = None
+
+
+# ==============================================================================
+# ⬇️⬇️⬇️ API Endpoints (Flask) ⬇️⬇️⬇️
+# ==============================================================================
+
+@app.route("/")
+def index():
+    # ⭐️ แก้ไข: Flask จะมองหาไฟล์ในโฟลเดอร์ 'templates'
+    return render_template("index.html")
+
+@app.route('/connect', methods=['POST'])
+def connect_dobot_api():
+    global g_bot, g_drawing_state
+    if g_bot is not None:
+        return jsonify({'status': 'success', 'message': 'Already connected', 'model': 'Dobot Magician', 'port': 'N/A'})
+    
+    port = find_dobot_port()
+    if not port:
+        g_drawing_state.update({'status': 'idle', 'message': 'Dobot not found'})
+        return jsonify({'status': 'error', 'message': 'Dobot not found on any port.'})
+    
+    try:
+        g_bot = Dobot(port=port, verbose=False)
+        g_bot.speed(DOBOT_SPEED, DOBOT_ACCELERATION)
+        g_drawing_state.update({'status': 'connected', 'message': 'Connected'})
+        return jsonify({'status': 'success', 'message': 'Connected', 'model': 'Dobot Magician', 'port': port})
+    except Exception as e:
+        g_bot = None
+        g_drawing_state.update({'status': 'idle', 'message': f'Connection failed: {e}'})
+        return jsonify({'status': 'error', 'message': f'Connection failed: {e}'})
+
+@app.route('/disconnect', methods=['POST'])
+def disconnect_dobot_api():
+    global g_bot, g_drawing_state, g_stop_drawing_flag
+    if g_drawing_state['status'] in ['drawing', 'paused']:
+        g_stop_drawing_flag = True # Force stop the thread
+        
+    if g_bot:
+        try:
+            g_bot.close()
+        except Exception:
+            pass # Ignore errors during close
+    g_bot = None
+    g_drawing_state.update({'status': 'idle', 'message': 'Disconnected', 'progress': 0, 'progress_image_url': None})
+    return jsonify({'status': 'success', 'message': 'Disconnected'})
+
+@app.route('/get_position', methods=['GET'])
+def get_position_api():
+    global g_bot
+    if g_bot is None:
+        return jsonify({'status': 'error', 'message': 'Not connected'})
+    
+    try:
+        pos = g_bot.pose()
+        return jsonify({'status': 'success', 'x': round(pos[0], 2), 'y': round(pos[1], 2), 'z': round(pos[2], 2)})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+@app.route('/set_paper_corners', methods=['POST'])
+def set_paper_corners_api():
+    global g_current_paper_corners
+    data = request.json
+    try:
+        corners = data['corners']
+        g_current_paper_corners = np.float32([
+            corners['tl'], corners['tr'], corners['br'], corners['bl']
+        ])
+        return jsonify({'status': 'success', 'message': '4 corners applied'})
+    except Exception:
+        return jsonify({'status': 'error', 'message': 'Invalid corner data'})
+
+@app.route('/set_default_area', methods=['POST'])
+def set_default_area_api():
+    global g_current_paper_corners
+    g_current_paper_corners = DEFAULT_PAPER_CORNERS.copy()
+    return jsonify({'status': 'success', 'message': 'Default center area set'})
+
+@app.route('/process_image', methods=['POST'])
+def process_image_api():
+    global g_generated_paths, g_current_paper_corners
+    
+    if 'image' not in request.files:
+        return jsonify({'status': 'error', 'message': 'No image file provided'})
+    
+    file = request.files['image']
+    if file.filename == '':
+        return jsonify({'status': 'error', 'message': 'No image selected'})
+
+    upload_path = os.path.join(OUTPUT_UPLOAD_DIR, file.filename)
+    file.save(upload_path)
+    
+    g_generated_paths = { 'sorted_paths_mm': [], 'sorted_lengths_mm': [], 'bg_img': None, 'm_inv': None, 'image_dims': (400, 400) }
+    
+    try:
+        img = cv2.imread(upload_path)
+        if img is None: 
+            return jsonify({'status': 'error', 'message': 'Could not read image file'})
+            
+        if img.ndim == 3 and img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        elif img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+        h, w = img.shape[:2]
+        ratio = MAX_OUTPUT_DIMENSION / max(h, w)
+        new_w, new_h = int(w * ratio), int(h * ratio)
+        img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY) 
+        blurred = cv2.GaussianBlur(gray, GAUSSIAN_BLUR_SIZE, 0)
+        edges = cv2.Canny(blurred, CANNY_THRESHOLD_LOWER, CANNY_THRESHOLD_UPPER)
+        edges_inverted = cv2.bitwise_not(edges) 
+        canny_output_bgr = cv2.cvtColor(edges_inverted, cv2.COLOR_GRAY2BGR) 
+        
+        canny_path = os.path.join(OUTPUT_CURRENT_RUN_PATH, 'canny_edge_output.png')
+        cv2.imwrite(canny_path, canny_output_bgr)
+        
+        contours, hierarchy = cv2.findContours(edges, CONTOUR_RETRIEVAL_MODE, CONTOUR_APPROX_METHOD)
+        base_paths_px_unfiltered = [cnt for cnt in contours if cv2.contourArea(cnt) >= MIN_CONTOUR_AREA and len(cnt) > 1]
+        base_paths_px = filter_overlapping_contours(base_paths_px_unfiltered)
+
+        num_sets, total_length, sorted_paths_mm, sorted_lengths_mm, bg_img, M_inv_final, image_dims = run_experiment(
+            "WebApp_Run", CONTOUR_APPROX_EPSILON, MAX_CONNECT_DISTANCE, base_paths_px, img_resized, g_current_paper_corners 
+        )
+        
+        if num_sets == 0:
+            return jsonify({'status': 'error', 'message': 'No drawing paths found after processing.'})
+
+        g_generated_paths['sorted_paths_mm'] = sorted_paths_mm
+        g_generated_paths['sorted_lengths_mm'] = sorted_lengths_mm
+        g_generated_paths['bg_img'] = bg_img
+        g_generated_paths['m_inv'] = M_inv_final
+        g_generated_paths['image_dims'] = image_dims
+
+        return jsonify({
+            'status': 'success',
+            'message': f'Processed. Found {num_sets} paths.',
+            'lineart_url': '/output/canny_edge_output.png',
+            'vector_url': '/output/drawing_plan.png',
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': f'Processing error: {e}'})
+
+@app.route('/output/<path:filename>')
+def serve_output_file(filename):
+    """API: เสิร์ฟไฟล์ภาพที่ประมวลผล (Canny, Plan, Progress)"""
+    response = send_from_directory(OUTPUT_CURRENT_RUN_PATH, filename)
+    # เพิ่ม Cache Control เพื่อให้รูป Progress โหลดใหม่ได้
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
+# ⭐️ โค้ด Frontend คาดหวังการเรียก API '/get_path_data' สำหรับ Preview Animation 
+# แต่การส่งข้อมูล Path ขนาดใหญ่อาจทำให้เกิดปัญหา
+# ในโค้ดนี้ เราจะส่งข้อมูลเฉพาะจุดเริ่มต้นและจำนวน Path ไปแทน เพื่อให้โค้ด Frontend ไม่พัง
+@app.route('/get_path_data', methods=['GET'])
+def get_path_data_api():
+    if not g_generated_paths['sorted_paths_mm']:
+        return jsonify({'status': 'error', 'message': 'No paths processed.'})
+
+    # ⭐️ โค้ดนี้ส่งข้อมูล Path เต็มรูปแบบ (เพื่อสนับสนุน Preview Animation ใน Frontend)
+    # (อาจส่งผลให้ response มีขนาดใหญ่)
+    paths_data = []
+    for path in g_generated_paths['sorted_paths_mm']:
+        # path มี shape (-1, 1, 2) ต้องแปลงเป็น (-1, 2) ก่อน
+        # และเพิ่มพิกัด Z (Safety Height) เข้าไปในทุกจุด
+        
+        # ⭐️ ใช้ Safety Height เป็น Z-coordinate สำหรับ Preview 
+        # (เพื่อให้ Preview Animation สามารถแยกแยะเส้นที่ยกปากกาได้)
+        # เนื่องจาก Dobot จะยกปากกาขึ้นก่อนวาดเส้นใหม่เสมอ เราจะกำหนดจุดสุดท้ายของเส้นก่อนหน้าเป็น PenUp 
+        # และจุดเริ่มต้นของเส้นใหม่เป็น PenDown
+
+        # **หมายเหตุ: ข้อมูลนี้เหมาะสำหรับการจำลองการวาดเท่านั้น**
+        # **โค้ด Frontend จะต้องทำการคำนวณ Z-coordinate เพื่อแยกแยะ PenUp/PenDown เอง**
+
+        # เพื่อให้ง่ายสำหรับการส่งผ่าน HTTP: ส่งแค่ X, Y (MM) แล้วให้ Frontend จัดการ Z เอง
+        # แต่โค้ด Frontend คาดหวัง Z ด้วย (p1 = toCanvas(point[0], point[1]); p2 = toCanvas(nextPoint[0], nextPoint[1]); ...)
+        
+        # หากส่ง Z=0 ไปตรงๆ อาจเกิดปัญหา เพราะค่า Z จริงมีผลต่อการวาด
+        
+        # แนวทางแก้ไข: ส่งพิกัด X, Y, Z โดย Z คือ PenDown_Z 
+        z_down = PEN_DOWN_Z + g_pen_settings['pen_offset']
+        
+        # เพิ่มพิกัด Z เข้าไปในทุกจุดของ Path
+        path_xy = path.reshape(-1, 2)
+        path_xyz = np.hstack((path_xy, np.full((path_xy.shape[0], 1), z_down)))
+        
+        # **สำคัญ:** ต้องเพิ่มจุดยกปากกา (Jump) ระหว่าง Path Sets ด้วย
+        if paths_data:
+            # เพิ่มจุดยกปากกา (Safety Jump) ที่จุดสุดท้ายของ Path ก่อนหน้า
+            last_x, last_y, _ = paths_data[-1]
+            z_up = z_down + g_pen_settings['safety_height']
+            paths_data.append([last_x, last_y, z_up])
+            
+            # เพิ่มจุดยกปากกา (Jump) ที่จุดเริ่มต้นของ Path ปัจจุบัน
+            start_x, start_y, _ = path_xyz[0]
+            paths_data.append([start_x, start_y, z_up])
+            
+        paths_data.extend(path_xyz.tolist())
+        
+    return jsonify({
+        'status': 'success',
+        'paths': paths_data # [[x1, y1, z1], [x2, y2, z2], ...]
+    })
+
+@app.route('/start_drawing', methods=['POST'])
+def start_drawing_api():
+    global g_drawing_thread, g_drawing_state, g_pen_settings
+    
+    if g_drawing_thread is not None and g_drawing_thread.is_alive():
+        return jsonify({'status': 'error', 'message': 'Already drawing'})
+    
+    if g_bot is None:
+        return jsonify({'status': 'error', 'message': 'Dobot not connected'})
+
+    if not g_generated_paths['sorted_paths_mm']:
+        return jsonify({'status': 'error', 'message': 'No paths processed. Press Process Image first.'})
+
+    # 1. อัปเดตการตั้งค่าจากหน้าเว็บ
+    try:
+        data = request.json
+        g_pen_settings['speed_percent'] = float(data.get('speed', 50))
+        g_pen_settings['pen_offset'] = float(data.get('pen_offset', 0))
+        g_pen_settings['safety_height'] = float(data.get('safety_height', 10))
+    except Exception:
+        return jsonify({'status': 'error', 'message': 'Invalid drawing settings'})
+        
+    # 2. เริ่ม Thread
+    g_drawing_state.update({'status': 'drawing', 'progress': 0, 'message': 'Initializing...'})
+    g_drawing_thread = threading.Thread(target=drawing_thread_function)
+    g_drawing_thread.start()
+    
+    return jsonify({'status': 'success', 'message': 'Drawing started'})
+
+@app.route('/progress', methods=['GET'])
+def get_progress_api():
+    """API: สำหรับหน้าเว็บ Polling สถานะ (พร้อม Progress Image URL)"""
+    global g_drawing_state
+    
+    state_copy = g_drawing_state.copy()
+    if state_copy['status'] == 'connected':
+        state_copy['message'] = 'Ready. Press Draw.'
+        
+    return jsonify(state_copy)
+
+@app.route('/pause', methods=['POST'])
+@app.route('/pause_drawing', methods=['POST']) # รองรับทั้ง /pause และ /pause_drawing
+def pause_drawing_api():
+    global g_bot, g_drawing_state
+    if g_drawing_state['status'] == 'drawing':
+        try:
+            if g_bot: g_bot.pause()
+            g_drawing_state['status'] = 'paused'
+            g_drawing_state['message'] = 'Paused'
+            return jsonify({'status': 'success', 'message': 'Paused'})
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': str(e)})
+    return jsonify({'status': 'error', 'message': 'Not drawing or already paused'})
+
+@app.route('/resume', methods=['POST'])
+@app.route('/resume_drawing', methods=['POST']) # รองรับทั้ง /resume และ /resume_drawing
+def resume_drawing_api():
+    global g_bot, g_drawing_state
+    if g_drawing_state['status'] == 'paused':
+        try:
+            if g_bot: g_bot.resume()
+            g_drawing_state['status'] = 'drawing'
+            g_drawing_state['message'] = 'Resumed'
+            return jsonify({'status': 'success', 'message': 'Resumed'})
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': str(e)})
+    return jsonify({'status': 'error', 'message': 'Not paused'})
+
+@app.route('/stop', methods=['POST'])
+@app.route('/stop_drawing', methods=['POST']) # รองรับทั้ง /stop และ /stop_drawing
+def stop_drawing_api():
+    global g_bot, g_drawing_state, g_stop_drawing_flag
+    
+    if g_drawing_state['status'] in ['drawing', 'paused']:
+        g_stop_drawing_flag = True
+        
+        try:
+            if g_bot:
+                # สั่งหยุดการทำงานที่ค้างอยู่ในคิวทันที
+                g_bot._set_queued_cmd_stop_exec()
+                g_bot._set_queued_cmd_clear()
+                # พยายามยกปากกาขึ้น
+                try:
+                    pos = g_bot.pose()
+                    g_bot.move_to(pos[0], pos[1], pos[2] + 20, pos[3], wait=True)
+                except Exception:
+                    pass
+            
+            return jsonify({'status': 'success', 'message': 'Stop signal sent, halting Dobot'})
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': f'Force stop error: {e}'})
+            
+    return jsonify({'status': 'success', 'message': 'Already stopped or idle'})
+
+@app.route('/get_initial_status', methods=['GET'])
+def get_initial_status_api():
+    """API สำหรับ Frontend เรียกเมื่อโหลดหน้าเพื่อตรวจสอบสถานะการเชื่อมต่อเริ่มต้น"""
+    global g_bot
+    is_connected = g_bot is not None
+    return jsonify({
+        'is_connected': is_connected,
+        'status': 'connected' if is_connected else 'idle',
+        'model': 'Dobot Magician' if is_connected else '-',
+        'port': g_bot.port if is_connected and hasattr(g_bot, 'port') else '-'
+    })
+
+
+if __name__ == "__main__":
+    print("============================================")
+    print("    Dobot Drawing Web Server")
+    print(f"    Serving output from: {OUTPUT_CURRENT_RUN_PATH}")
+    print("    Access at: http://127.0.0.1:5002")
+    print("============================================")
+    app.run(debug=True, host='0.0.0.0', port=5002, use_reloader=False)
