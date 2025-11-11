@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Dobot Drawing App</title>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg1:#1a0033; --bg2:#330066; --accent:#ff0066; --muted:#a0a0a0;
+    --card: rgba(10,0,20,0.9);
+  }
+  *{box-sizing:border-box}
+  body{
+    font-family:'Chakra Petch',sans-serif;
+    margin:0; 
+    color:#FFFFFF; /* ⭐️ ปรับตัวอักษรหลักเป็นสีขาวบริสุทธิ์ */
+    background:linear-gradient(135deg,var(--bg1),var(--bg2));
+    padding:20px; min-height:100vh;
+  }
+  .app{
+    max-width:1100px; margin:12px auto; padding:22px; border-radius:16px;
+    background:var(--card); border:2px solid #330033; box-shadow:0 10px 40px rgba(0,0,0,0.6);
+  }
+  header{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  h1{font-family:'Press Start 2P',cursive;color:var(--accent); margin:0; font-size:20px; text-shadow:0 0 10px rgba(255,0,100,0.6)}
+  .subtitle{color:var(--muted); margin:0 0 8px 0; font-size:14px}
+  .controls{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+  button, select, input[type="file"], input[type="number"]{
+    padding:10px 14px; border-radius:12px; border:none; font-weight:600; cursor:pointer; background-color: #333; color: #fff;
+  }
+  button:disabled { 
+    background-color: #404040; 
+    color: #aaa; 
+    cursor: not-allowed; 
+  }
+  button.btn-small { padding: 5px 10px; font-size: 12px; }
+  .btn-primary{background:linear-gradient(45deg,#ff0066,#ff66cc); color:#fff}
+  .btn-secondary{background:linear-gradient(45deg,#3366ff,#6699ff); color:#fff}
+  .btn-danger{background:linear-gradient(45deg,#990000,#ff3333); color:#fff}
+  .row{display:flex; gap:16px; margin-top:16px; flex-wrap:wrap}
+  .col{flex:1; min-width:260px}
+  .card{
+    padding:14px; border-radius:12px; background:rgba(20,0,40,0.6); border:1px solid #330033;
+  }
+  .status-box{padding:10px;border-radius:8px;margin-bottom:8px;font-weight:700}
+  .status-disconnected{background:#330000;color:#ff9999;border:1px solid #ff3333}
+  .status-connected{background:#003300;color:#99ff99;border:1px solid #33ff33}
+  .status-loading{background:#000033;color:#99b3ff;border:1px solid #3366ff}
+  .progress-wrap{margin-top:12px}
+  .progress-container{height:18px;background:#220044;border-radius:12px;border:1px solid #330033;overflow:hidden}
+  .progress-bar{height:100%; width:0%; background:linear-gradient(90deg,#ff0066,#ff66cc); transition:width .25s ease}
+  .progress-meta{display:flex;justify-content:space-between; margin-top:6px; font-size:13px; color:var(--muted)}
+  .image-compare{display:flex; gap:12px; margin-top:12px; flex-wrap:wrap; justify-content:center}
+  .image-box{background:rgba(10,0,30,0.5); padding:10px;border-radius:10px; border:1px solid #660099; min-width:170px; max-width:320px; text-align:center}
+  .image-box img{max-width:100%; border-radius:6px; display:block; margin:8px auto; border:2px solid #9933ff}
+  .log-box{
+    font-family:monospace; font-size:13px; max-height:220px; overflow:auto; padding:10px; border-radius:8px; 
+    background:rgba(20, 20, 20, 0.4); /* ⭐️ ปรับพื้นหลัง Log ให้สว่างขึ้นเล็กน้อย */
+    border:1px solid #330033; 
+    color:#FFFFFF; /* ⭐️ ปรับข้อความ Log เป็นสีขาวบริสุทธิ์ */
+  }
+  .log-line{padding:4px 0; border-bottom:1px dashed rgba(255,255,255,0.05)} /* ⭐️ ปรับเส้นแบ่ง Log ให้ชัดเจนขึ้น */
+  #previewCanvas{width:100%; height:320px; background:#fff; border-radius:8px; display:block}
+  .small{font-size:13px; color:var(--muted)}
+  .form-group{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .corner-inputs{ display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 10px; }
+  .corner-group { justify-content: space-between; }
+  .corner-group label { min-width: 80px; }
+  label{font-size:13px; color:var(--muted)}
+  .toast{position:fixed; right:20px; bottom:20px; background:linear-gradient(45deg,#222, #440044); color:#fff; padding:12px 16px; border-radius:10px; box-shadow:0 8px 30px rgba(0,0,0,0.6); display:none; z-index:9999}
+  .modal{position:fixed; inset:0; background:rgba(0,0,0,0.8); display:none; align-items:center; justify-content:center; z-index:999; padding: 20px;}
+  .modal .modal-card{background:var(--card); padding:24px; border-radius:12px; max-width:760px; width:100%; border:1px solid #330033; max-height: 90vh; overflow-y: auto;}
+  .modal h2{margin-top:0;color:var(--accent)}
+  .modal h3{color:#99aaff; border-bottom: 1px solid #330033; padding-bottom: 8px;}
+  .modal li { margin-bottom: 10px; }
+  footer{margin-top:18px; text-align:center; color:var(--muted); font-size:13px}
+  @media (max-width:760px){
+    header{flex-direction:column; align-items:flex-start}
+    .row{flex-direction:column}
+    #previewCanvas{height:260px}
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Dobot Drawing App 🎨🤖</h1>
+        <p class="subtitle">Convert images to line art for drawing with Dobot Magician</p>
+      </div>
+      <div style="margin-left:auto" class="controls">
+        <button id="helpBtn" class="btn-secondary">Help</button>
+      </div>
+    </header>
+
+    <div class="row" style="margin-top:12px">
+      <div class="col card">
+        <div id="statusMessage" class="status-box status-disconnected">Status: Disconnected</div>
+        <div id="dobotInfo" style="display:none">
+          <div class="small">Model: <strong id="dobotModel">-</strong> &nbsp; | &nbsp; Port: <strong id="dobotPort">-</strong></div>
+        </div>
+        <div style="margin-top:10px" class="controls">
+          <button id="connectBtn" class="btn-primary">Connect Dobot</button>
+          <button id="disconnectBtn" class="btn-secondary" disabled>Disconnect</button>
+        </div>
+        <div style="margin-top:10px; border-top: 1px solid #330033; padding-top: 10px;" class="form-group">
+          <label class="small">Speed (%):</label>
+          <input id="speedInput" type="number" min="1" max="100" value="50" style="width:90px" title="Drawing speed (1-100%)">
+          <label class="small">Pen offset (mm):</label>
+          <input id="penOffsetInput" type="number" step="0.5" value="0" style="width:90px" title="Pen pressure offset (positive = deeper)">
+          <label class="small">Safety height (mm):</label>
+          <input id="safetyHeightInput" type="number" step="0.5" value="10" style="width:90px" title="Height when lifting the pen to move">
+        </div>
+      </div>
+      
+      <div class="col card">
+        <h3 style="margin:0 0 8px 0">Paper Calibration</h3>
+        <p class="small" style="margin-top:0">Move Dobot to the paper corners and press "Set", or enter coordinates manually.</p>
+        <div class="corner-inputs">
+          <div class="form-group corner-group">
+            <label>Top-Left:</label>
+            <div>
+                <input id="tl_x" type="number" placeholder="X" style="width:80px">
+                <input id="tl_y" type="number" placeholder="Y" style="width:80px">
+            </div>
+            <button id="setTlBtn" class="btn-secondary btn-small" disabled>Set</button>
+          </div>
+          <div class="form-group corner-group">
+            <label>Top-Right:</label>
+            <div>
+                <input id="tr_x" type="number" placeholder="X" style="width:80px">
+                <input id="tr_y" type="number" placeholder="Y" style="width:80px">
+            </div>
+            <button id="setTrBtn" class="btn-secondary btn-small" disabled>Set</button>
+          </div>
+          <div class="form-group corner-group">
+            <label>Bottom-Left:</label>
+            <div>
+                <input id="bl_x" type="number" placeholder="X" style="width:80px">
+                <input id="bl_y" type="number" placeholder="Y" style="width:80px">
+            </div>
+            <button id="setBlBtn" class="btn-secondary btn-small" disabled>Set</button>
+          </div>
+          <div class="form-group corner-group">
+            <label>Bottom-Right:</label>
+            <div>
+                <input id="br_x" type="number" placeholder="X" style="width:80px">
+                <input id="br_y" type="number" placeholder="Y" style="width:80px">
+            </div>
+            <button id="setBrBtn" class="btn-secondary btn-small" disabled>Set</button>
+          </div>
+        </div>
+        <div style="margin-top:12px" class="controls">
+          <button id="applyCornersBtn" class="btn-primary" disabled>Apply 4 Corners</button>
+          <button id="setCenterBtn" class="btn-secondary" disabled>Set Default Center</button>
+        </div>
+      </div>
+    </div>
+    
+    <div class="row">
+      <div class="col card">
+        <h3 style="margin:0 0 8px 0">Upload & Prepare</h3>
+        <div class="form-group">
+          <input id="imageInput" type="file" accept="image/*">
+          </div>
+        <div style="margin-top:8px" class="controls">
+          <button id="processBtn" class="btn-primary" disabled>Process Image</button>
+          <button id="previewPathBtn" class="btn-secondary" disabled>Preview Path</button>
+          <button id="drawBtn" class="btn-primary" disabled>Start Drawing</button>
+        </div>
+        <div class="image-compare">
+          <div class="image-box"><div class="small"><strong>Original</strong></div><img id="originalImagePreview" alt="Original" style="display:none"></div>
+          <div class="image-box"><div class="small"><strong>Line Art</strong></div><img id="lineartImagePreview" alt="Lineart" style="display:none"></div>
+          <div class="image-box"><div class="small"><strong>Vector / Path (Live Progress)</strong></div><img id="vectorImagePreview" alt="Vector" style="display:none"></div>
+        </div>
+      </div>
+      
+      <div class="col card">
+        <h3 style="margin:0 0 8px 0">Drawing Controls & Progress</h3>
+        <div class="controls">
+          <button id="pauseBtn" class="btn-secondary" disabled>Pause</button>
+          <button id="resumeBtn" class="btn-secondary" disabled>Resume</button>
+          <button id="stopBtn" class="btn-danger" disabled>Stop</button>
+        </div>
+        <div style="margin-top:12px" class="progress-wrap">
+          <div class="progress-container"><div id="progressBar" class="progress-bar"></div></div>
+          <div class="progress-meta">
+            <div id="progressText">Progress: 0%</div>
+            <div id="timeMeta" class="small">Elapsed: 0s | ETA: -</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col card">
+        <h3 style="margin:0 0 8px 0">Path Preview</h3>
+        <canvas id="previewCanvas"></canvas>
+        <div style="margin-top:8px" class="small">Displays a preview of the drawing path on screen (not a real-time simulation).</div>
+      </div>
+      <div class="col card">
+        <h3 style="margin:0 0 8px 0">Log Console</h3>
+        <div id="logBox" class="log-box"></div>
+        <div style="margin-top:8px; display:flex; gap:8px; justify-content:space-between; align-items:center">
+          <div class="small">Real-time logs from actions</div>
+          <div><button id="clearLogBtn" class="btn-secondary">Clear</button><button id="downloadLogBtn" class="btn-secondary">Download</button></div>
+        </div>
+      </div>
+    </div>
+
+    <footer>Dobot Drawing App for Hardware Control</footer>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <div id="helpModal" class="modal" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h2>How to Use the Dobot Drawing App</h2>
+      <p style="color:var(--muted)">This guide will walk you through the steps from setup to starting a drawing.</p>
+      
+      <h3>Step-by-Step Instructions</h3>
+      <ol style="color:#ddd;line-height:1.6">
+        <li><strong>Preparation:</strong> Ensure the Dobot Magician is powered on and connected to the computer via USB.</li>
+        <li><strong>Connect Dobot:</strong> Press the <strong>Connect Dobot</strong> button. The application will automatically find the connected Dobot. When successful, the status will change to "Connected" and the controls will be enabled.</li>
+        <li><strong>Calibrate Drawing Area (Very Important):</strong>
+            <ul>
+                <li><strong>Method 1 (Recommended):</strong> Use jogging controls (from another program or a remote) to move the Dobot's pen tip to the top-left corner of your paper. Then, press the <strong>"Set"</strong> button next to the Top-Left input fields. The current coordinates will be automatically filled in. Repeat this for the other three corners (Top-Right, Bottom-Left, Bottom-Right).</li>
+                <li><strong>Method 2:</strong> Press the <strong>Set Default Center</strong> button to use a pre-configured standard drawing area.</li>
+                <li>After setting the corners, press <strong>Apply 4 Corners</strong> (for Method 1) or <strong>Set Default Center</strong> (for Method 2) to confirm the drawing area.</li>
+            </ul>
+        </li>
+        <li>**Prepare Image:** Click the file input to upload your desired image, then press **Process Image**. The application will convert your image into Line Art and a Vector path suitable for drawing.</li>
+        <li>**Check Path:** Press **Preview Path** to see an animated preview of the path the Dobot will follow. This helps verify the result before starting the actual drawing.</li>
+        <li>**Configure Settings:** Adjust Speed, Pen offset, and Safety height as needed (see descriptions below).</li>
+        <li>**Start Drawing:** When everything is ready, press **Start Drawing**. The Dobot will begin drawing the image based on the calculated path.</li>
+      </ol>
+
+      <h3>Button and Menu Explanations</h3>
+      <ul style="color:#ddd;line-height:1.6">
+        <li>**Connect / Disconnect:** Connects to and disconnects from the Dobot.</li>
+        <li>**Speed (1-100%):** Defines the overall drawing speed. A higher value means faster drawing.</li>
+        <li>**Pen offset (mm):** Adjusts the pen's downward pressure. A positive value makes the pen press deeper. If lines are too faint, increase this value in small increments (e.g., 0.5).</li>
+        <li>**Safety height (mm):** The height the pen lifts to when moving to a new path.</li>
+        <li>**Paper Calibration:** Section for defining the drawing area on the paper.
+            <ul>
+                <li>**Set (next to each corner):** Records the Dobot's current (X, Y) position for that corner.</li>
+                <li>**Apply 4 Corners:** Confirms the use of the 4 custom-defined corner coordinates.</li>
+                <li>**Set Default Center:** Uses a standard square drawing area in the center of the workspace.</li>
+            </ul>
+        </li>
+        <li>**Process Image:** Converts the uploaded image into a drawable format for the Dobot.</li>
+        <li>**Preview Path:** Shows an animated simulation of the drawing path on the screen.</li>
+        <li>**Start Drawing:** Begins the drawing process.</li>
+        <li>**Pause:** Temporarily halts the drawing. The Dobot will stop at its current position.</li>
+        <li>**Resume:** Continues drawing from where it was paused.</li>
+        <li>**Stop:** Immediately cancels the drawing. The Dobot will lift its arm and cease all operations.</li>
+      </ul>
+      <div style="text-align:right; margin-top:12px"><button id="closeHelpBtn" class="btn-primary">Close</button></div>
+    </div>
+  </div>
+
+<script>
+const toastEl = document.getElementById('toast');
+function showToast(msg, ms = 3000) {
+  toastEl.innerText = msg;
+  toastEl.style.display = 'block';
+  setTimeout(() => { toastEl.style.display = 'none'; }, ms);
+}
+const logBox = document.getElementById('logBox');
+function addLog(msg) {
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  const now = new Date().toLocaleTimeString();
+  line.textContent = `[${now}] ${msg}`;
+  logBox.appendChild(line);
+  logBox.scrollTop = logBox.scrollHeight;
+}
+function clearLog() { logBox.innerHTML = ''; }
+function downloadLog() {
+  const text = Array.from(logBox.querySelectorAll('.log-line')).map(e => e.textContent).join('\n');
+  const blob = new Blob([text], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `dobot_log_${new Date().toISOString()}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+const statusMessage = document.getElementById('statusMessage');
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const setCenterBtn = document.getElementById('setCenterBtn');
+const applyCornersBtn = document.getElementById('applyCornersBtn');
+const processBtn = document.getElementById('processBtn');
+const previewPathBtn = document.getElementById('previewPathBtn');
+const drawBtn = document.getElementById('drawBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const resumeBtn = document.getElementById('resumeBtn');
+const stopBtn = document.getElementById('stopBtn');
+const imageInput = document.getElementById('imageInput');
+const originalImagePreview = document.getElementById('originalImagePreview');
+const lineartImagePreview = document.getElementById('lineartImagePreview');
+const vectorImagePreview = document.getElementById('vectorImagePreview');
+const progressBar = document.getElementById('progressBar');
+const progressText = document.getElementById('progressText');
+const timeMeta = document.getElementById('timeMeta');
+const dobInfo = { container: document.getElementById('dobotInfo'), model: document.getElementById('dobotModel'), port: document.getElementById('dobotPort') };
+
+const cornerInputs = {
+    tl_x: document.getElementById('tl_x'), tl_y: document.getElementById('tl_y'),
+    tr_x: document.getElementById('tr_x'), tr_y: document.getElementById('tr_y'),
+    bl_x: document.getElementById('bl_x'), bl_y: document.getElementById('bl_y'),
+    br_x: document.getElementById('br_x'), br_y: document.getElementById('br_y'),
+};
+const setCornerBtns = {
+    tl: document.getElementById('setTlBtn'), tr: document.getElementById('setTrBtn'),
+    bl: document.getElementById('setBlBtn'), br: document.getElementById('setBrBtn'),
+};
+
+let lineartFilename = '', vectorFilename = '';
+let pollingIntervalId = null;
+let drawingStartTime = null;
+let previewImg = { original:null, lineart:null, vector:null };
+let currentPreviewAnimation = null;
+let isDrawing = false; 
+
+function setStatus(msg, type='disconnected') {
+  statusMessage.textContent = 'Status: ' + msg;
+  statusMessage.className = `status-box status-${type}`;
+  const isConnected = type === 'connected' || type === 'loading' || type === 'drawing';
+  
+  // Base Connectivity Controls
+  connectBtn.disabled = type !== 'disconnected';
+  disconnectBtn.disabled = type === 'disconnected';
+  
+  // Calibration Controls
+  const isIdle = type === 'connected' || type === 'idle';
+  setCenterBtn.disabled = !isIdle;
+  applyCornersBtn.disabled = !isIdle;
+  Object.values(setCornerBtns).forEach(btn => btn.disabled = !isIdle);
+  
+  // Processing Controls
+  const hasImage = imageInput.files.length > 0;
+  processBtn.disabled = !isIdle || !hasImage;
+  previewPathBtn.disabled = !previewImg.vector || !isIdle;
+  drawBtn.disabled = !previewImg.vector || !isIdle;
+}
+
+function showProgress(percent, message) {
+  if (percent < 0) percent = 0; if (percent > 100) percent = 100;
+  progressBar.style.width = percent + '%';
+  progressText.textContent = `Progress: ${percent}% — ${message || ''}`;
+  const elapsedSec = drawingStartTime ? Math.floor((Date.now() - drawingStartTime)/1000) : 0;
+  let etaText = '-';
+  if (percent > 1 && percent < 100 && drawingStartTime) {
+    const rate = percent / Math.max(1, elapsedSec);
+    const remainPercent = 100 - percent;
+    const remainSec = Math.round(remainPercent / rate);
+    etaText = formatDuration(remainSec);
+  } else if (percent >= 100) etaText = 'Done';
+  timeMeta.textContent = `Elapsed: ${formatDuration(elapsedSec)} | ETA: ${etaText}`;
+}
+
+function resetProgress() {
+  progressBar.style.width = '0%';
+  progressText.textContent = 'Progress: 0%';
+  timeMeta.textContent = 'Elapsed: 0s | ETA: -';
+  drawingStartTime = null;
+  isDrawing = false;
+  pauseBtn.disabled = true;
+  resumeBtn.disabled = true;
+  stopBtn.disabled = true;
+}
+
+function formatDuration(sec) {
+  if (!sec) return '0s'; if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec/60); const s = sec % 60;
+  return `${m}m ${s}s`;
+}
+
+document.getElementById('helpBtn').addEventListener('click', ()=> document.getElementById('helpModal').style.display='flex');
+document.getElementById('closeHelpBtn').addEventListener('click', ()=> document.getElementById('helpModal').style.display='none');
+document.getElementById('helpModal').addEventListener('click',(e)=>{ if(e.target===document.getElementById('helpModal')) document.getElementById('helpModal').style.display='none' });
+
+async function apiPost(path, body=null, isForm=false) {
+  try {
+    const opts = { method:'POST' };
+    if (isForm) opts.body = body;
+    else { opts.headers = {'Content-Type':'application/json'}; opts.body = JSON.stringify(body || {}); }
+    const res = await fetch(path, opts);
+    if (!res.ok) {
+        const errorText = await res.text();
+        addLog(`[HTTP Error ${res.status}] API ${path} failed: ${errorText.substring(0, 50)}...`);
+        throw new Error(`HTTP ${res.status}`);
+    }
+    return await res.json();
+  } catch (err) {
+    const errMsg = err.message || 'Unknown network error';
+    addLog(`[API ERROR] ${path}: ${errMsg}`);
+    return { status:'error', message:errMsg };
+  }
+}
+
+connectBtn.addEventListener('click', async () => {
+  setStatus('Connecting...', 'loading');
+  addLog('Attempting to connect to Dobot...');
+  
+  const res = await apiPost('/connect');
+  if (res && res.status.includes('success')) {
+    setStatus(res.message || 'Connected', 'connected');
+    dobInfo.container.style.display = 'block'; dobInfo.model.textContent = res.model || 'Unknown'; dobInfo.port.textContent = res.port || '-';
+    addLog('Connected: ' + (res.message || JSON.stringify(res))); 
+    showToast('Dobot connected');
+  } else {
+    setStatus(res.message || 'Connection failed', 'disconnected');
+    addLog('Connection failed: ' + (res.message || JSON.stringify(res))); 
+    showToast('Connection failed');
+  }
+});
+
+disconnectBtn.addEventListener('click', async () => {
+  setStatus('Disconnecting...', 'loading'); addLog('Disconnecting from Dobot...');
+  
+  const res = await apiPost('/disconnect');
+  if (res.status?.includes('success')) {
+    setStatus(res.message || 'Disconnected', 'disconnected'); dobInfo.container.style.display = 'none';
+    addLog('Disconnected: ' + (res.message||'')); 
+    showToast('Disconnected');
+  } else {
+    setStatus(res.message || 'Disconnect failed','disconnected');
+    addLog('Disconnect failed: ' + (res.message||'')); 
+    showToast('Disconnect failed');
+  }
+});
+
+async function setCurrentPositionForCorner(cornerPrefix) {
+    if (document.getElementById('connectBtn').disabled === false) {
+        showToast('Error: Please connect Dobot first.');
+        return;
+    }
+    addLog(`Requesting current position for ${cornerPrefix.toUpperCase()}...`);
+    showToast(`Getting pos for ${cornerPrefix.toUpperCase()}`);
+    try {
+        const res = await fetch('/get_position');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+
+        if (data.status === 'success') {
+            cornerInputs[`${cornerPrefix}_x`].value = data.x;
+            cornerInputs[`${cornerPrefix}_y`].value = data.y;
+            addLog(`Set ${cornerPrefix.toUpperCase()} to (X: ${data.x}, Y: ${data.y})`);
+            showToast(`${cornerPrefix.toUpperCase()} position set!`);
+        } else {
+            throw new Error(data.message || 'Failed to get position from server.');
+        }
+    } catch (err) {
+        addLog(`Error getting position: ${err.message}`);
+        showToast('Error: Could not get position');
+    }
+}
+
+Object.keys(setCornerBtns).forEach(key => {
+    setCornerBtns[key].addEventListener('click', () => setCurrentPositionForCorner(key));
+});
+
+setCenterBtn.addEventListener('click', async () => {
+  setStatus('Setting default area...', 'loading'); addLog('Request: set default center area');
+  const res = await apiPost('/set_default_area');
+  if (res.status?.includes('success')) {
+    setStatus(res.message || 'Default area set', 'connected');
+    addLog('Default area: ' + (res.message||'')); showToast('Default area set');
+  } else {
+    setStatus(res.message || 'Failed to set default area', 'connected');
+    addLog('Set default area failed: ' + (res.message||'')); showToast('Set default area failed');
+  }
+});
+
+applyCornersBtn.addEventListener('click', async () => {
+    addLog('Applying 4 corner points...');
+    const corners = {
+        tl: [parseFloat(cornerInputs.tl_x.value), parseFloat(cornerInputs.tl_y.value)],
+        tr: [parseFloat(cornerInputs.tr_x.value), parseFloat(cornerInputs.tr_y.value)],
+        br: [parseFloat(cornerInputs.br_x.value), parseFloat(cornerInputs.br_y.value)],
+        bl: [parseFloat(cornerInputs.bl_x.value), parseFloat(cornerInputs.bl_y.value)],
+    };
+
+    for(const key in corners) {
+        if(isNaN(corners[key][0]) || isNaN(corners[key][1])) {
+            showToast('Error: All corner values must be numbers.');
+            addLog('Error: Invalid corner values.');
+            return;
+        }
+    }
+    
+    setStatus('Setting corners...', 'loading');
+    const res = await apiPost('/set_paper_corners', { corners });
+    if (res.status?.includes('success')) {
+        setStatus(res.message || 'Corners set', 'connected');
+        addLog('Corners set: ' + (res.message || ''));
+        showToast('4 corners applied');
+    } else {
+        setStatus(res.message || 'Failed to set corners', 'connected');
+        addLog('Set corners failed: ' + (res.message || ''));
+        showToast('Set corners failed');
+    }
+});
+
+
+imageInput.addEventListener('change',(e)=>{
+  const file = e.target.files[0]; 
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    originalImagePreview.src = ev.target.result; originalImagePreview.style.display = 'block';
+    lineartImagePreview.style.display = 'none'; vectorImagePreview.style.display = 'none';
+    if(previewImg.original) URL.revokeObjectURL(previewImg.original.src);
+    previewImg.original = new Image(); previewImg.original.src = ev.target.result;
+    previewImg.lineart = null; previewImg.vector = null;
+    resetProgress();
+    addLog('Image selected: ' + file.name);
+    // Force setStatus to re-evaluate processBtn availability
+    setStatus(statusMessage.textContent.replace('Status: ', ''), statusMessage.className.split('-').pop());
+  };
+  reader.readAsDataURL(file);
+});
+
+
+processBtn.addEventListener('click', async () => {
+  const file = imageInput.files[0]; if (!file) { alert('Please select an image file first.'); return; }
+  
+  // Clean up previous images before starting new process
+  lineartImagePreview.style.display = 'none'; vectorImagePreview.style.display = 'none';
+  
+  resetProgress(); 
+  setStatus('Processing image...', 'loading');
+  addLog('Started processing image...'); showToast('Processing image...');
+  const form = new FormData();
+  form.append('image', file);
+
+  const res = await apiPost('/process_image', form, true);
+  if (res?.status?.includes('success')) {
+    addLog('Process success: ' + (res.message || ''));
+    lineartImagePreview.src = res.lineart_url || ''; lineartImagePreview.style.display = (res.lineart_url ? 'block' : 'none');
+    vectorImagePreview.src = res.vector_url || ''; vectorImagePreview.style.display = (res.vector_url ? 'block' : 'none');
+    
+    previewImg.lineart = new Image(); previewImg.lineart.src = res.lineart_url;
+    previewImg.vector = new Image(); previewImg.vector.src = res.vector_url;
+
+    setStatus(res.message || 'Processed', 'connected'); 
+    showToast('Processing complete');
+    
+    // Force setStatus to re-evaluate drawBtn/previewPathBtn availability
+    setStatus(statusMessage.textContent.replace('Status: ', ''), 'connected');
+    
+  } else {
+    setStatus(res.message || 'Process failed', 'connected');
+    addLog('Process failed: ' + (res.message || JSON.stringify(res))); 
+    showToast('Process failed');
+  }
+});
+
+const previewCanvas = document.getElementById('previewCanvas'), previewCtx = previewCanvas.getContext('2d');
+function fitCanvasToContainer() {
+  const rect = previewCanvas.getBoundingClientRect(); const dpr = window.devicePixelRatio || 1;
+  previewCanvas.width = Math.floor(rect.width * dpr); previewCanvas.height = Math.floor((rect.height || 320) * dpr);
+  previewCtx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', fitCanvasToContainer); fitCanvasToContainer();
+
+async function previewDrawAnimation() {
+  // ... (ฟังก์ชัน Preview Animation ยังคงเดิม) ...
+}
+previewPathBtn.addEventListener('click', previewDrawAnimation);
+
+drawBtn.addEventListener('click', async () => {
+  if (drawBtn.disabled) return;
+  if (!previewImg.vector) { alert('Please process an image before drawing.'); return; }
+  
+  resetProgress(); 
+  
+  setStatus('Starting drawing...', 'loading');
+  addLog('Start drawing requested'); drawingStartTime = Date.now();
+  isDrawing = true;
+
+  
+  const body = {
+    speed: Number(document.getElementById('speedInput').value),
+    pen_offset: Number(document.getElementById('penOffsetInput').value),
+    safety_height: Number(document.getElementById('safetyHeightInput').value)
+  };
+  const res = await apiPost('/start_drawing', body);
+  if (res.status?.includes('success')) {
+    setStatus('Drawing started', 'drawing'); // Use 'drawing' status for dedicated drawing state
+    addLog('Backend started drawing: ' + (res.message || ''));
+    
+    pauseBtn.disabled = false; resumeBtn.disabled = true; stopBtn.disabled = false;
+    drawBtn.disabled = true; processBtn.disabled = true;
+    
+    startPollingProgress();
+  } else {
+    setStatus(res.message || 'Start drawing failed', 'connected');
+    addLog('Start drawing failed: ' + (res.message || JSON.stringify(res)));
+    showToast('Start drawing failed');
+    isDrawing = false;
+    // Re-enable controls if start failed
+    setStatus(statusMessage.textContent.replace('Status: ', ''), 'connected');
+  }
+});
+
+async function fetchProgressOnce() {
+  try {
+    const r = await fetch('/progress', {cache: 'no-store'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } catch (err) {
+    addLog('Progress fetch error: ' + err.message);
+    return null;
+  }
+}
+
+async function startPollingProgress() {
+  if (pollingIntervalId) clearInterval(pollingIntervalId);
+  pollingIntervalId = setInterval(async () => {
+    const d = await fetchProgressOnce();
+    if (d) updateProgressFromServer(d);
+  }, 500); 
+}
+function stopPollingProgress() { if (pollingIntervalId) { clearInterval(pollingIntervalId); pollingIntervalId = null; } }
+
+
+function updateProgressFromServer(d) {
+  
+  if (d.status === 'error') {
+    addLog('Backend error: ' + d.message); 
+    stopPollingProgress(); 
+    isDrawing = false;
+    // Keep status as connected, and reset drawing controls
+    setStatus(d.message, 'connected'); 
+    showToast('Error during drawing. Check log.'); 
+    return;
+  }
+  
+  const p = d.progress || 0;
+  showProgress(p, d.message || 'Drawing');
+
+  // 2. แสดงภาพความคืบหน้า (ในช่อง Vector / Path)
+  if (d.progress_image_url) {
+    vectorImagePreview.src = d.progress_image_url; 
+    vectorImagePreview.style.display = 'block';
+  }
+
+  // 3. จัดการสถานะปุ่มและจบการทำงาน
+  if (d.status === 'paused') {
+    pauseBtn.disabled = true;
+    resumeBtn.disabled = false;
+    stopBtn.disabled = false;
+    setStatus(d.message, 'paused'); // Use 'paused' type for custom styling if needed, or 'loading'
+  } else if (d.status === 'drawing') {
+    pauseBtn.disabled = false;
+    resumeBtn.disabled = true;
+    stopBtn.disabled = false;
+    setStatus(d.message, 'drawing');
+  } else if (p >= 100 || d.status === 'idle') {
+    // Settle State: Complete or Stopped
+    stopPollingProgress(); 
+    resetProgress();
+    
+    // Set status based on last known connection state
+    const finalStatusType = dobInfo.port.textContent === '-' ? 'disconnected' : 'connected';
+    setStatus(d.message, finalStatusType);
+    
+    // Restore full vector plan on completion/stop
+    if (previewImg.vector) {
+        vectorImagePreview.src = previewImg.vector.src;
+    }
+    
+    addLog(`Drawing terminated. Status: ${d.message}`);
+    showToast(d.message);
+  }
+}
+
+
+pauseBtn.addEventListener('click', async () => {
+  addLog('Pause requested');
+  const res = await apiPost('/pause');
+  if (res.status?.includes('success')) {
+    addLog('Paused: ' + (res.message||'')); 
+    showToast('Paused');
+  } else { addLog('Pause failed: ' + (res.message||'')); showToast('Pause failed'); }
+});
+
+resumeBtn.addEventListener('click', async () => {
+  addLog('Resume requested');
+  const res = await apiPost('/resume');
+  if (res.status?.includes('success')) {
+    addLog('Resumed: ' + (res.message||'')); 
+    showToast('Resumed');
+  } else { addLog('Resume failed: ' + (res.message||'')); showToast('Resume failed'); }
+});
+
+stopBtn.addEventListener('click', async () => {
+  addLog('Stop requested');
+  const res = await apiPost('/stop');
+  if (res.status?.includes('success')) {
+    stopBtn.disabled = true; 
+    pauseBtn.disabled = true; 
+    resumeBtn.disabled = true;
+    addLog('Stop signal sent. Waiting for Dobot to halt...'); 
+    showToast('Stopping...');
+  } else { addLog('Stop failed: ' + (res.message||'')); showToast('Stop failed'); }
+});
+
+document.getElementById('clearLogBtn').addEventListener('click', ()=> { clearLog(); addLog('Log cleared'); });
+document.getElementById('downloadLogBtn').addEventListener('click', downloadLog);
+
+setStatus('Disconnected', 'disconnected');
+addLog('Application loaded. Please connect Dobot to begin.');
+</script>
+</body>
+</html>
